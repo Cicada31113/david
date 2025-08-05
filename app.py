@@ -1,12 +1,10 @@
-# app.py
-
-from flask import Flask, render_template
+from flask import Flask, render_template, redirect
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return '홈 페이지'
+    return redirect('/menu')
 
 @app.route('/menu')
 def menu():
