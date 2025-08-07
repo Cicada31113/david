@@ -36,6 +36,7 @@ if __name__ == '__main__':
     print("🚦 서버 실행 준비 완료")
     app.run(debug=True)
 
+
 # 문제에서 "Python 실행 시 __debug__ 플래그 활성화를 위한 인자를 포함해 실행한다."
 # 라고 하였는데, 이를 위해 print(f"DEBUG 상태: __debug__ == {__debug__}") 를 추가했고,
 # 실행시 python -O app.py 하여 디버깅 끄고 실행했음 (O는 대문자 O)
