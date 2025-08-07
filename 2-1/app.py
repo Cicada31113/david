@@ -7,8 +7,8 @@ from flask import Flask, render_template
 app = Flask(__name__)
 print("✅ Flask 앱 생성 완료")
 
-@app.route('/')  
-def ():
+@app.route('/test1')  
+def test1():
     print("🚀 '/' 경로에 접속함") 
 
     if app.debug:   # 개발 모드(debug=True)일 때만 실행
@@ -21,7 +21,7 @@ def ():
         hostname = ' '      # 디버그 모드가 아닐 때 아래처럼 실행
     
     print("📄 index.html 렌더링 시작")
-    return render_template('html')
+    return render_template('test1.html')
 
 
                      # socket.gethostname()
