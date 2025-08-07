@@ -7,8 +7,8 @@ from flask import Flask, render_template
 app = Flask(__name__)
 print("✅ Flask 앱 생성 완료")
 
-@app.route('/test2')
-def test2():
+@app.route('/')  
+def home():
     print("🚀 '/' 경로에 접속함") 
 
     if app.debug:   # 개발 모드(debug=True)일 때만 실행
@@ -21,7 +21,7 @@ def test2():
         hostname = ' '      # 디버그 모드가 아닐 때 아래처럼 실행
     
     print("📄 index.html 렌더링 시작")
-    return render_template('test2.html')
+    return render_template('index.html', computername=hostname)
 
 
                      # socket.gethostname()
@@ -39,3 +39,4 @@ if __name__ == '__main__':
 # 문제에서 "Python 실행 시 __debug__ 플래그 활성화를 위한 인자를 포함해 실행한다."
 # 라고 하였는데, 이를 위해 print(f"DEBUG 상태: __debug__ == {__debug__}") 를 추가했고,
 # 실행시 python -O app.py 하여 디버깅 끄고 실행했음 (O는 대문자 O)
+
