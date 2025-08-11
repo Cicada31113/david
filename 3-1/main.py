@@ -4,27 +4,43 @@ from datetime import datetime
 from textwrap import fill
 from collections import Counter
 
+
+# import json -> 파이썬 객체(dict, list)를 json 문자열/파일로 저장하거나, 그 반대로 읽어오는 도구를 가져옴
+# from datetime import datetime  -> 문자열 타임스탬프 <> 시간객체 변환하고, 정렬/비교에 쓰려고 가져옴
+# from textwrap import fill -> 너무 긴 문장을 콘솔 폭에 맞춰 자동 줄바꿈해 표처럼 예쁘게 보여주려고 씀
+# from collection import Counter -> 이벤트 종류가 몇번 나왔는지 빠르게 세려고 빈도계산기(Counter)를 가져옴
+
 LOG_FILE = 'mission_computer_main.log'
-JSON_FILE = 'mission_computer_main.json'
-REPORT_FILE = 'log_analysis.md'
-DANGER_FILE = 'danger_logs.log'
-DT_FMT = '%Y-%m-%d %H:%M:%S'
+JSON_FILE = 'mission_computer_main.json'   # 정리된 결과를 딕셔너리 형태 {timestamp: message}로 저장할 json 파일이름
+REPORT_FILE = 'log_analysis.md'       # 로그를 분석해서 만든 사고원인분석보고서를 마크다운으로 저장할 파일 이름
+DANGER_FILE = 'danger_logs.log'       # 위험 키워드가 들어간 원문 로그 줄만 따로 모아서 저장할 파일 이름
+DT_FMT = '%Y-%m-%d %H:%M:%S'          # 타임스탬프 문자열 형식 정의. 예:2023-08-27 10:00:00 같은 형태
 
 # 위험 키워드(대소문자 무시 영어, 한글은 그대로 매칭)
 DANGER_KEYWORDS_EN = ['explosion', 'leak', 'high temperature', 'oxygen', 'o2', 'fire', 'warning', 'danger']
 DANGER_KEYWORDS_KO = ['폭발', '누출', '고온', '산소', '화재', '경고', '위험']
 
 
-def read_lines(path: str) -> list[str]:
+def read_lines(path: str) -> list[str]:        # path: str은 표지판 역할 / -> list[str]: 이 함수가 반환할 값이 어떤타입인지 알려주는 표시
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return f.read().splitlines()
-    except FileNotFoundError:
+        with open(path, 'r', encoding='utf-8') as f:   # with -> 컨텍스트 매니저 문법. 파일을 열고나면 블록이 끝날때 자동으로 close()해주는 안전장치.
+            return f.read().splitlines()               # open -> 파이썬 내장함수 open()으로 파일 열기 / r은 읽기모드
+    except FileNotFoundError:                         
         print(f'[에러] {path} 파일이 없습니다.')
         raise SystemExit(1)
     except UnicodeDecodeError:
         print(f'[에러] {path} 파일의 인코딩이 UTF-8이 아닙니다.')
         raise SystemExit(1)
+    
+#     ➡️ 하는 일:
+# 1) path(파일 경로)에 있는 파일을 읽어.
+# 2) UTF-8로 읽어서, 파일 전체 내용을 줄 단위로 잘라서 리스트로 반환해.
+#    예: ["2023-08-27 10:00:00,INFO,메시지", "2023-08-27 10:02:00,INFO,메시지", ...]
+# 3) 만약 파일이 없으면(FileNotFoundError) "[에러] ~파일이 없습니다." 찍고 프로그램을 끝내.
+# 4) UTF-8이 아니면(UnicodeDecodeError) "[에러] UTF-8이 아닙니다." 찍고 프로그램을 끝내.
+
+# 💡 한마디로:  
+# "로그 파일을 줄 단위로 읽어서 리스트로 내놓는 역할. 파일 없거나 인코딩 틀리면 즉시 종료."
 
 
 def parse_csv_line(line: str) -> tuple[str, str, str] | None:
@@ -297,3 +313,145 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
+
+
+# 1. UTF-8이란?   (Unicode TransFormation Format)
+# 컴퓨터가 문자를 저장하는 방법(문자 인코딩 방식) 중 하나야.
+# 사람은 A, 가 처럼 글자를 그대로 보지만, 컴퓨터는 글자를 숫자로 저장함.
+# "어떤 글자를 어떤 숫자로 표현할지" 정해놓은 규칙이 문자 인코딩이야.
+
+# 2. UTF-8의 특징
+# 유니코드(Unicode) 체계의 한 방식.
+# 전 세계 모든 문자(한글, 영어, 이모지 등)를 표현 가능.
+# 영어/숫자는 1바이트, 한글은 3바이트, 이모지는 4바이트로 저장.
+# 지금 인터넷, 웹, JSON, 파이썬 기본 등 대부분이 UTF-8을 표준으로 씀.
+
+# 3. 왜 중요하냐?
+# 파일이 UTF-8로 저장돼 있으면, 한글/영어 섞여도 깨지지 않고 읽을 수 있음.
+# 만약 다른 인코딩(EUC-KR, CP949 등)으로 저장된 파일을 UTF-8로 읽으려고 하면 문자 깨짐(�) 현상 발생.
+                                                          
+# 문자:  A   가   😀
+# 숫자: 65  44032  128512   (유니코드 번호)
+# UTF-8 저장 시:
+#  A → 41          (16진수, 1바이트)
+#  가 → EA B0 80   (3바이트)
+#  😀 → F0 9F 98 80 (4바이트)
+
+                    # retrun f.read().splitlines()
+                    # 파일 내용을 전부 읽어서, 줄 단위로 잘라 리스트로 만든 뒤 함수 밖으로 돌려준다.
+# f.read()
+# -> open()으로 연 파일 객체 f에서 파일 전체 내용을 하나의 긴 문자열로 읽음.
+# 예: 파일에 두 줄이 있으면 "첫째줄\n둘째줄" 이런식으로 반호나
+
+# .splitlines()
+# -> 문자열을 줄바꿈 (\n,\r\n) 기준으로 잘라서 리스트로 만듦.
+# -> 줄 끝의 줄바꿈 문자는 제거됨.
+# -> 예: "a\nb\nc".splitline() -> ['a', 'b', 'c']
+
+                     # except FileNotFoundError:
+                     # 파이썬이 파일을 열려고 했는데, 해당 경로에 파일이 없을 때 발생하는 내장 예외 클래스.
+
+# 예: open("없는파일.txt", "r")
+# # FileNotFoundError: [Errno 2] No such file or directory: '없는파일.txt'
+             
+                     # raise SystemExit(1)
+                     # 이 시점에서 프로그램을 바로 종료시키고, 상태 코드는 1(에러)로 남긴다.
+                    
+# raise -> 파이썬에서 예외(에러)를 강제로 발생시키는 키워드 
+# 여기서는 SystemExit(1) 예외를 발생시킴.
+
+# SystemExit -> 프로그램을 즉시 종료시키는 특수한 예외 클래스.
+# 보통 sys.exit() 함수를 써도 같은 효과지만, 여기선 직접 예외를 발생시키는 방식으로 종료함.
+
+# (1) -> 종료 코드 (exit status code).
+# 0 -> 정상 종료 // 1(혹은 0이 아닌값)-> 비정상 종료, 에러상태
+# 운영체제나 다른 프로그램이 이 값을 보고 "성공인지 실패인지" 판단할 수 있음.
+# 예: raise SystemExit(1) -> 프로그램 바로 종료, 이후 코드 실행 안됨.
+
+                      # except UnicodeDecodeError:
+                      # UTF-8로 읽으려다 인코딩이 달라서 깨진 경우를 잡아 처리한다.
+
+# 파일을 읽을 때 인코딩 방식이 안 맞아서 문자를 해석(decode)하지 못하면 발생하는 예외.
+# 예: 파일이 EUC-KR로 저장돼 있는데 encoding='utf-8'로 열면 발생.
+# "이 바이트(숫자조합)를 UTF-8 문자로 바꿀 수 없다"는 의미
+
+                      # def parse_csv_line(line: str) -> tuple[str, str, str] | None:
+                      # "line"이라는 문자열을 받아서, 정상적인 csv면 문자열 3개짜리 튜플을 주고, 아니면 None을 준다.
+                      
+# tuple[str, str, str] | None
+# 반환값이 (문자열, 문자열, 문자열) 구조의 튜플이거나(None), 잘못된 형식이면 None을 반환한다는 뜻
+# ' | ' 는 union 의미, "이 타입이거나 저 타입"이라는 뜻 (파이썬 3.10+ 문법)
+
+# 튜플(tuple) 이란?
+# 여러 값을 하나의 묶음으로 저장하는 자료형.
+# 리스트(list)와 비슷하지만, 한 번 만들면 수정할 수 없음(불변, immutable)
+# 소괄호 () 로 묶어서 표ㅗ현.
+# 요소들은 순서가 있고, 인덱스로 접근 가능
+# 예:
+# person = ("덕현", 31, "개발자")
+# print(person[0])  # "덕현"
+# print(person[1])  # 31
+# 여기서 person은 3개의 값이 순서대로 들어있는 튜플
+# "덕현"은 인덱스 0, 31은 인덱스 1, "개발자"는 인덱스 2.
+
+# | 특징      | 리스트(list)         | 튜플(tuple)                 |
+# | -------- | ------------- ---   | ---------  ----    ------- |
+# | 기호      | []                  |   ()                       |
+# | 수정 가능? | 가능                 |   불가능                    |
+# | 속도      | 보통                 |   약간 빠름                  |
+# | 용도      | 바뀔 수 있는 데이터 모음 | 바뀌면 안 되는 고정 데이터 모음 |
+
+
+                         # parts = line.strip().split(',', 2)
+
+# line.strip()
+# -> strip() 메서드는 문자열 양쪽에 있는 공백, 탭(\t), 줄바꿈(\n) 같은 여백문자 제거.
+
+#.split(',', 2)
+# split(구분자, 최대분할횟수) -> 문자열을 구분자를 기준으로 나눠서 리스트로 반환
+# 예:"2023-08-27 10:00:00,INFO,Rocket, start".split(',', 2)
+# ['2023-08-27 10:00:00', 'INFO', 'Rocket, start']
+
+                          # if len(parts) != 3:
+
+# if -> 조건문. 뒤의 조건이 참(True)이면, 바로 아래 들여쓴 코드 블록을 실행.
+# len(parts) -> parts 리스트 안의 요소 개수를 구함.
+
+# !=3 
+# != -> "같지않다" 비교 연산자
+# len(parts) != 3   -> 리스트 길이가 3이 아니면 True
+# 여기서 3을 기준으로 삼는건, 이 함수에서 CSV 한줄을 timestamp, event, message 딱 3부분으로 나누는게 목표
+# 만약 3개가 아니면, 잘못된 형식이라는 뜻.
+
+                        # ts, event, msg = (p.strip() for p in parts)
+
+# ts, event, msg =
+# 튜플/리스트 언패킹(unpacking)문법.
+# 오른쪽에 있는 값(여기선 3개의 문자열)을 순서대로 왼쪽 변수 3개에 나눠 담음.
+# 예:
+# a, b = [1, 2]  
+# a = 1, b = 2
+
+# (p.strip() for p in parts)
+# for p in parts -> parts 리스트에서 요소를 하나씩 꺼내서 p에 담음.
+# (... for... in...) -> 제너레이터 표현식(generator expression).
+# -> 리스트 [] 대신 소괄호()를 쓰면 메모리에 전부 올리지 않고 순서대로 처리.
+
+#  리스트 표현식                  -> 모든 결과를 한 번에 만들어서 메모리에 저장 / 바로 인덱스로 접근가능
+# [x * 2 for x in range(5)]  
+# # → [0, 2, 4, 6, 8]
+
+#  제너레이터 표현식               -> 필요할 때 하나씩 만들어서 전달 // 한번 소비하면 다시 못씀(순서대로만 사용)
+# (x * 2 for x in range(5))  
+#  → 제너레이터 객체 하나를 만듦
+
+
+                          # if not ts or not msg:
+
+# not ts
+# not -> 부정 연산자. 값이 비어있거나(False로 평가되면) 참이 됨.
+# 문자열의 경우: 
+#   - 비어있으면 False 로 취급됩 -> not "" -> True
+#   - 내용이 있으면 True로 취급됨 -> not "abc" -> False
+# 즉
