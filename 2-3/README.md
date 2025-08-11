@@ -2,8 +2,7 @@
 
 ## 반달곰 커피 홈페이지 (H2 헤더)
 
-참조링크: https://반달곰 커피  
-(※ 실제 클릭 가능한 링크 형태 예: [반달곰 커피](https://반달곰커피))
+참조링크: https://반달곰%20커피  
 
 문구: 오디오 출력 소스코드
 
@@ -12,3 +11,4 @@ lang = request.args.get('lang', DEFAULT_LANG)
 fp = BytesIO()
 gTTS(text, "com", lang).write_to_fp(fp)
 encoded_audio_data = base64.b64encode(fp.getvalue())
+
