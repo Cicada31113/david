@@ -706,3 +706,45 @@ if __name__ == '__main__':
                                        # 2. return
                                        # - 이렇게 합쳐진 하나의 긴 문자열(표 전체)을 함수 결과로 돌려줌.
                                        # pretty_table() 함수를 호출한 쪽에서는 이 완성된 표 문자열을 받아서 print로 찍을 수 있음
+
+# def sort_rows_by_time(
+#     rows_ts_msg: list[tuple[str, str]] | list[tuple[str, str, str]],      
+#     ts_index: int = 0) -> None: 
+
+# "sort_rows_by_time" -> 이름 그대로 "행(rows)을 시간(time) 기준으로 정렬(sort)" 하겠다는 의미
+# "rows_ts_msg"라는 리스트를 '제자리에서(in-place)' 시간 기준 역순으로 정렬하는 함수
+# rows_ts_msg항목 형태는 두 가지 중 하나:
+#  - [(timestamp, message)]
+#  - [(timestamp, event, message)]
+# 그래서 타입힌트를 union(|)으로 적은 거고, 둘 다 다룰 수 있게 ts_index로 '타임스탬프가 있는 칸'을 지정.
+# ts_index 기본값 0 -> 각 튜플의 0번째가 timestamp라는 뜻.
+# 반환값은 None -> 새 리스트를 돌려주는 게 아니라, 넘어온 리스트 자체를 내부에서 직접 정렬한다는 의미.
+
+# ' | ' 는 union 의미, "이 타입이거나 저 타입"이라는 뜻 (파이썬 3.10+ 문법)
+
+
+#  두 번째 매개변수 + 기본값
+#     ts_index: int = 0
+# ➡️ ts_index 는 “타임스탬프가 들어있는 칸의 위치(인덱스)”를 말해. 기본값 0.
+# ➡️ 왜 필요하냐?
+#    위에서 A/B 구조가 다르다 했지.
+#    - A형 (timestamp, message) → timestamp가 항상 0번째 칸.
+#    - B형 (timestamp, event, message)도 0번째가 timestamp면 그대로 0.
+#    - 만약 어떤 로그가 (event, timestamp, message) 구조라면? 그땐 ts_index=1로 바꿔주면 돼.
+# 간단 도식
+# 행(튜플) 예:
+# ("2023-08-27 10:02:00", "INFO", "Power on")
+#   인덱스:               0             1         2
+#   ts_index → 0  (여기선 0번째가 timestamp)
+# 다른 구조 예:
+# ("INFO", "2023-08-27 10:02:00", "Power on")
+#   인덱스:   0             1                2
+#   ts_index → 1  (이런 경우 호출 시 ts_index=1 로 지정)
+
+# # 반환 타입 + 본문 시작 콜론
+# ) -> None:
+# ➡️ “이 함수는 아무것도 돌려주지 않는다”는 뜻. (반환형 None)
+# ➡️ 왜 None 이냐? 이 함수는 정렬을 ‘제자리(in-place)’에서 해. 즉, 넘겨준 리스트 자체를 바꿔놓고 끝.
+# ➡️ 콜론(:)은 이제 함수 본문이 시작된다는 파이썬 문법 신호.
+
+# 이해하셨다면 ‘이해했어’라고 말해주세요. 그럼 다음 줄로 넘어갈게요.
