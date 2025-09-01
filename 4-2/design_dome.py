@@ -3,7 +3,11 @@ import os
 import csv
 import pickle # 이진 저장을 위한 라이브러리 추가
 import numpy as np
+import math
 
+#---------------------------------------------------------------------------------------
+# 경로/압축
+#---------------------------------------------------------------------------------------
 zip_dir = os.path.dirname(os.path.realpath(__file__))
 zip_path = os.path.join(zip_dir, 'mars_base.zip') 
 
@@ -20,6 +24,11 @@ def unzip_file(zip_dir, zip_path):
 
 # from pathlib import Path
 # folder_path = Path(zip_path).parent  이런식으로 폴더위치 지정해도됨
+
+
+#---------------------------------------------------------------------------------------
+# 문제 1. 인벤토리 csv/이진 처리
+#---------------------------------------------------------------------------------------
 
 
 def read_csv(filename):
@@ -48,29 +57,39 @@ def read_csv(filename):
 
 
 def write_csv(header, data, filename):
-    with open(filename, 'w', encoding='utf-8', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        for row in data:
-            writer.writerow(row)
-    print(f'{filename} 파일 저장 완료되었습니다')
+    try:
+        with open(filename, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            for row in data:
+                row[-1] = f"{float(row[-1]): .3f}"      # 인화성 지수(마지막 열) 소수점 3자리 고정
+                writer.writerow(row)            
+        print(f'{filename} 파일 저장 완료되었습니다')
+    except OSError as e:
+        print(f'파일 저장 오류: {e}')
 
 
 def write_binary(data, filename):
-    with open(filename, 'wb') as f:
-        pickle.dump(data, f)
-    print(f'{filename} 이진 파일 저장했다오')
+    try:
+        with open(filename, 'wb') as f:
+            pickle.dump(data, f)
+        print(f'{filename} 이진 파일 저장했다오')
+    except OSError as e:
+        print(f'이진 파일 저장 오류: {e}')
 
 def read_binary(filename):
-    with open(filename, 'rb') as f:
-        return pickle.load(f)
+    try:
+        with open(filename, 'rb') as f:
+            return pickle.load(f)
+    except OSError as e:
+        print(f'이진 파일 읽기 오류: {e}')
+        return []   # 이거 추가됨
 
 
 
-
-# 문제 2
-
-import math
+#---------------------------------------------------------------------------------------
+# 문제 2. 돔 표면적/무게 계산
+#---------------------------------------------------------------------------------------
 
 # 전역상태 저장
 all_set = {
@@ -90,54 +109,65 @@ density_dict = {
 MARS_G = 0.38 # 지구 중력의 0.38ㅂ0
 
 def sphere_area():
+    """
+    입력: diamter(m), material(glass/aluminum/carbon_steel), thickness(cm)
+    전역 all_set에 요약 저장
+    """
     try:
         # 표면적 
         R = float(input("diameter(m: meter): ").strip())
         if R <= 0 :
             raise ValueError(" 음수는 계산 불가능 ")
-        r = R / 2
+        r = R / 2.0
         surface_area = 3 * math.pi * (r ** 2)
 
         # 재질
         material = input("무슨 재질인데? 영어로 (glass, aluminum, carbon_steel): ").strip().lower()
         if material not in density_dict:
             raise ValueError("조건에 없는 재질임")
-        density = density_dict[material]
-
-        # 밀도 단위 변환: g/cm -> kg/m
-        density_kg_m3 = density_dict[material] * 1000
-
+        density_g_cm3 = density_dict[material]
 
         # 두께
-        thickness_in = input("두께(cm, 기본=1): ").strip()
-        thickness_cm = float(thickness_in) if thickness_in else 1.0
+        raw = input("두께(cm, 기본=1): ").strip()
+        thickness_cm = float(raw) if raw else 1.0
         if thickness_cm <= 0:
-            raise ValueError("두께는 양수여야함")
+            raise ValueError("두께는 양수만")
+        
+        # 단위변환/계산
+        # 질량(mass) = 부피 x 밀도 -> 단위:kg
+        # 무게(weight) = 질량 x 중력가속도 -> 단위: 뉴턴(N)
+
         thickness_m = thickness_cm / 100.0
+        density_kg_m3 = density_g_cm3 * 1000.0
+        volume_m3 = surface_area * thickness_m
+        mass_kg = volume_m3 * density_kg_m3
+        weight_on_mars_N = mass_kg * 9.80665 * 0.38
+        weight_mars_kg_equiv = mass_kg * MARS_G  # 응?
 
-        face_outer = surface_area * thickness_m
-        mass_kg = face_outer * density_kg_m3
-        weight_mars_kg = mass_kg * MARS_G
+        # 출력
+        print(f"면적(m^2): {surface_area:.3f}")
+        print(f"무게(kg): {mass_kg:.3f}")
+        print(f"화성에서의 무게(N): {weight_on_mars_N:.3f}")
 
+        # 전역상태 저장 (성공시에만)
         all_set.update({
             'material': material,
-            'diamter': R,
+            'diameter': R,
             'thickness': thickness_cm,
             'surface_area': round(surface_area, 3),
-            'weight_mars_kg': round(weight_mars_kg, 3),
+            'weight_mars_kg': round(weight_mars_kg_equiv, 3),
         })
 
         print('\n')
-        print('---------------------결과값--------------------')
-        print(f'surface_area: {surface_area: .3f} m**2')
-        print(f'mass: {mass_kg: .3f} kg')
-        print(f'weight on Mars(~kgf): {weight_mars_kg: .3f} kg')
-        print(f'재질 -> {material}, 지름 -> {R: .3f}, 두께 -> {thickness_cm: .3f}, 면적 -> {surface_area: .3f} m^2, 무게 -> {weight_mars_kg: .3f} kg')
 
-    except ValueError as e :
+    except ValueError as e :   # 추가된건데 확인요망
         print("입력오류", e)
+        return None, None, None       
+    
         
-
+#---------------------------------------------------------------------------------------
+# 문제 3. 부품 데이터 통합 분석 (NumPy)
+#---------------------------------------------------------------------------------------
 
 def parts_analysis():
     try:
@@ -146,9 +176,10 @@ def parts_analysis():
                 fname, 
                 delimiter=",",
                 names=True, 
-                dtype=None, 
+                dtype=None,         #혼합타입 자동
                 encoding="utf-8"
             )
+        
         a1 = load("mars_base_main_parts-001.csv")
         a2 = load("mars_base_main_parts-002.csv")
         a3 = load("mars_base_main_parts-003.csv")
@@ -156,13 +187,14 @@ def parts_analysis():
         col1, col2 = a1.dtype.names
 
         names_all = np.concatenate([a1[col1], a2[col1], a3[col1]])
-        vals_all = np.concatenate([a1[col2], a2[col2], a3[col2]])
+        vals_all = np.concatenate([a1[col2], a2[col2], a3[col2]]).astype(float)
 
         uniq, inv = np.unique(names_all, return_inverse=True)
         sums = np.bincount(inv, weights=vals_all, minlength=len(uniq))
         counts = np.bincount(inv, minlength=len(uniq))
         means = sums / counts
         
+        # 평균 50 미만 필터링
         mask = means < 50
         work_names = uniq[mask]
         work_means = means[mask]
@@ -178,15 +210,39 @@ def parts_analysis():
                 )
         print("parts_to_work_on.csv 저장완")
 
-        if work_names.size == 0:
-            print("전치 행렬:\n []")
+    except Exception as e:
+        print("에러:", e)
+
+    try:
+        parts2 = np.genfromtxt(
+            "parts_to_work_on.csv",
+            delimiter=",",
+            skip_header=1,
+            dtype=str,
+            encoding='utf-8'
+        )
+
+        if parts2.size == 0:
+            print("parts_to_work_on.csv 에 유효데이터 없어서 parts3 못만듦")
         else:
-            print("전치 행렬:\n", [list(work_names), list(np.round(work_means, 2))])
+            if parts2.ndim == 1:
+                parts2 = parts2.reshape(1, -1)
+
+            np.savetxt("parts2.csv", parts2, delimiter=",", fmt="%s", encoding="utf-8")
+            print("parts2.csv 저장완")
+
+            parts3 = parts2.T
+            np.savetxt("parts3.csv", parts3, delimiter=",", fmt="%s")
+            print("parts3.csv 저장완")
+            print(parts3)
 
     except Exception as e:
         print("에러:", e)
 
 
+#---------------------------------------------------------------------------------------
+# 메인
+#---------------------------------------------------------------------------------------
 
 def main():
     #1 압축해제
@@ -229,8 +285,8 @@ def main():
 
     # 반구체 표면적과 무게 계산
     sphere_area()
-
     print('\n')
+
     #Mars 부품데이터 통합 분석(Numpy 활용)
     parts_analysis()
 
