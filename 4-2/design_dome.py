@@ -29,7 +29,7 @@ def unzip_file(zip_dir, zip_path):
 #---------------------------------------------------------------------------------------
 # 문제 1. 인벤토리 csv/이진 처리
 #---------------------------------------------------------------------------------------
-
+#이진파일은 포맷자체가 지정되어있지 않은 상태여서 이후에 내가 어떤 유틸리티설정을 하느냐에 따라 달라질 수 있다.
 
 def read_csv(filename):
     out1 = []
@@ -193,6 +193,9 @@ def parts_analysis():
         sums = np.bincount(inv, weights=vals_all, minlength=len(uniq))
         counts = np.bincount(inv, minlength=len(uniq))
         means = sums / counts
+        #이부분은 넘파이로 더 간단하게 만들어 볼 수 있음 np.mean 으로 축 정해서 계산
+        #데이터분류를 잘 나눠놔야겠다. 
+        # 넘파이 데이터를 연산하는걸 빠르게
         
         # 평균 50 미만 필터링
         mask = means < 50
@@ -290,5 +293,11 @@ def main():
     #Mars 부품데이터 통합 분석(Numpy 활용)
     parts_analysis()
 
-if __name__ == '__main__':
+if __name__ == '__main__': 
     main()
+
+
+
+#반구체면적 구할 때 다른 방법
+#반구가 있으면 지름에두께를 더하면 큰 반구와 작은 반구가 나온다, 기초값에서 빼는 방식이네요.
+#설명하시는
