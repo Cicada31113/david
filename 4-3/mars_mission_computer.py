@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import time # 문제 2번을 위해 추가
 from datetime import datetime
 
 class DummySensor:
@@ -42,7 +43,7 @@ class DummySensor:
 
         if log:
             self._log_env(self.env_values)
-            return self.env_values
+        return self.env_values
         
     #-------보너스 과제용: 내부 전용 메소드-------
     def _log_env(self, env: dict) -> None:
@@ -72,6 +73,41 @@ class DummySensor:
                 f.write(header + '\n')
             f.write(line + '\n')
 
+# ====================================================
+#             문제 2 : Mission Computer
+# ====================================================
+
+class MissionComputer:
+    """미션 컴퓨터: 센서값을 수집/보관하고 주기적으로 JSON 출력."""
+    def __init__(self, sensor: DummySensor) -> None:
+        self.sensor = sensor 
+        # 문제에서 지정한 키 스키마 동일 유지
+        self.env_values = {
+            'mars_base_internal_temperature': None,      # ℃
+            'mars_base_external_temperature': None,      # ℃
+            'mars_base_internal_humidity': None,         # %
+            'mars_base_external_illuminance': None,      # W/m2
+            'mars_base_internal_co2': None,              # %
+            'mars_base_internal_oxygen': None,           # %  
+        }
+
+    def get_sensor_data(self, interval_sec: int = 5, log_sensor: bool = True) -> None:
+        """
+        센서에서 값을 읽어 env_values에 담고, JSON으로 interval_sec마다 출력.
+        Ctrl+C(keyboard interrupt)로 종료 가능.
+        """
+        try:
+            while True:
+                self.sensor.set_env()
+                data = self.sensor.get_env(log=log_sensor)
+                self.env_values.update(data)
+                print(json.dumps(self.env_values, ensure_ascii=False))
+                time.sleep(interval_sec)
+        except KeyboardInterrupt:
+            print('System stopped... .')
+
+
+
 if __name__ == '__main__':
     # 인스턴스 생성
     ds = DummySensor()
@@ -82,3 +118,8 @@ if __name__ == '__main__':
 
     # JSON으로 보기 좋게 출력(사람 읽기 용)
     print(json.dumps(env, ensure_ascii=False, indent=2))
+
+    # ======== 문제 2 ======== (5초마다 지속출력)
+    print('\n[MissionComputer streaming every 5s] (Press Ctrl+C to stop)')
+    RunComputer = MissionComputer(ds)
+    RunComputer.get_sensor_data(interval_sec=5, log_sensor=True)
