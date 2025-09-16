@@ -10,7 +10,9 @@ class DummySensor:
     """더미 센서: 화성 기지 환경값을 랜덤 생성해 보관/반환/로그."""
 
     LOG_PATH = 'mission_env.log'
-
+# 클래스 / 멤버 / 인스턴스 차이들 검색해보자  ( 그리고 세부적으로 멤버/인스턴스 차이)
+# 멤버와 인스턴스는 전혀 다른 내용 // 상황을 생각해보자
+# new / init 
     def __init__(self) -> None:
         # 모든 항목을 키로 고정해두고 값은 None으로 초기화
         self.env_values = {
@@ -123,3 +125,4 @@ if __name__ == '__main__':
     print('\n[MissionComputer streaming every 5s] (Press Ctrl+C to stop)')
     RunComputer = MissionComputer(ds)
     RunComputer.get_sensor_data(interval_sec=5, log_sensor=True)
+
