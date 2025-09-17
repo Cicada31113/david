@@ -1,0 +1,6 @@
+서버가 바로 종료된 이유는 BaseSettings가 Pydantic 2부터 pydantic-settings 패키지로 옮겨졌는데, 코드가 예전 위치를 참조하면서 import 에러가 났기 때문입니다. 방금 4-3/shopping_mall_auth.py:14를 from pydantic import AnyHttpUrl + from pydantic_settings import BaseSettings 형태로 고쳤으니 한 번만 추가 의존성 설치 후 다시 실행하세요.
+
+가상환경 안에서 pip install pydantic-settings 실행
+그다음 uvicorn shopping_mall_auth:app --reload 재실행
+브라우저에서 http://localhost:8000/ 새로고침
+이제 서버가 정상적으로 뜨고 홈 화면이 보일 겁니다.

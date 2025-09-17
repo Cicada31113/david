@@ -37,7 +37,7 @@ def print_log(rows: List[Tuple[str, str, str]]) -> None:
 
 
 def rows_to_dict(rows: List[Tuple[str, str, str]]) -> dict[str, dict[str, str]]:
-    log_dict : dict[str, dict[str, str]] = {}
+    log_dict : dict[str, dict[str, str]] = {}   # 타입힌트를 하나만 넣어서, join
     for ts, event, msg in rows:
         log_dict[ts] = {
             'event': event,
@@ -45,7 +45,10 @@ def rows_to_dict(rows: List[Tuple[str, str, str]]) -> dict[str, dict[str, str]]:
         }
     return log_dict
 
-import json
+import json # 파일 크기에 따라 의견이 달라질 수 있음. / 인터프리터, 컴파일러 (인터프리터는 한 줄 씩 실행하는)
+            # json 은 현재 전역스코프인데 위치상 중간에 있음. 근데 컴파일러가 어떻게 구현하느냐에 따라 다름. 
+            # 일반적으로는 위에서 못쓴다고 생각하면된다. 
+            # 맨위에 둬도 좋다. 협업시 인풋을 위에서 쓰기도 한다.
 
 def save_to_json(data: dict[str, dict[str, str]], path: str = "mission_computer_main.json") -> None:
     try:
@@ -71,6 +74,8 @@ def write_markdown_report(rows: List[Tuple[str, str, str]], path: str = 'log_ana
     blob = ' '.join(msgs)
     blob_low = blob.lower()
 
+# 다양한 교집합들을 분기점으로 나누고 싶었을 때, 
+# 이진법으로 개수만큼 -> 분기문을 많이 줄일 수 있을 때 (리팩토링해보자)
     danger_lines = [
         f'- {ts} {event} {msg}'
         for ts, event, msg in rows

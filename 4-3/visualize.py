@@ -19,12 +19,40 @@ class State:
         self.stop_flag  = False
         self.pause_mode = False
         self.pending_steps = 0
+        self.docstring_quote = None
 
 STATE = State()
 TARGET_PATH = None
+SOURCE_LINES = []
 # 각 SSE 연결마다 전용 큐
 SUBS_LOCK = threading.Lock()
 SUBS = []  # list[queue.Queue[str]]
+
+def _load_source_lines(source):
+    global SOURCE_LINES
+    SOURCE_LINES = source.splitlines() if source else []
+
+
+def _should_skip_line(line_no):
+    if not SOURCE_LINES or line_no <= 0 or line_no > len(SOURCE_LINES):
+        return False
+    line = SOURCE_LINES[line_no-1]
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        return True
+    quotes = ('"""', "'''")
+    if STATE.docstring_quote:
+        quote = STATE.docstring_quote
+        if quote in stripped and stripped.count(quote) % 2 == 1:
+            STATE.docstring_quote = None
+        return True
+    for quote in quotes:
+        if quote in stripped:
+            count = stripped.count(quote)
+            if count % 2 == 1:
+                STATE.docstring_quote = quote
+            return True
+    return False
 
 def _broadcast(obj):
     """모든 구독자에게 이벤트 전송"""
@@ -101,6 +129,8 @@ def make_trace():
                 _broadcast({"type":"return","func":name,"stack":stack})
 
             elif event == "line":
+                if _should_skip_line(frame.f_lineno):
+                    return _trace
                 STATE.line_count += 1
                 if STATE.line_count > STATE.max_lines:
                     _broadcast({"type":"halt"})
@@ -150,6 +180,7 @@ def run_user(path, argv):
     STATE.pending_steps = 0
     STATE.stop_flag = False
     STATE.step_event.set()
+    STATE.docstring_quote = None
     script_msg = {"type":"script", "path": path}
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as fh:
@@ -157,6 +188,7 @@ def run_user(path, argv):
     except Exception as exc:
         script_msg["error"] = str(exc)
     _broadcast(script_msg)
+    _load_source_lines(script_msg.get('source'))
     tracer = make_trace()
     sys.settrace(tracer)
     threading.settrace(tracer)  # 새 스레드 추적
@@ -204,7 +236,7 @@ input[type="number"]:focus{outline:none}
 .stateDot{width:8px;height:8px;border-radius:50%;background:#94a3b8}
 .stateTag.run .stateDot{background:#4ade80}
 .stateTag.stop .stateDot{background:#f87171}
-main{display:grid;grid-template-columns:minmax(440px,55%) minmax(480px,1fr);gap:20px;padding:20px 24px 24px 24px;height:100%;min-height:0}
+main{display:grid;grid-template-columns:minmax(380px,45%) minmax(600px,1fr);gap:20px;padding:20px 24px 24px 24px;height:100%;min-height:0}
 #leftPane{display:flex;flex-direction:column;min-height:0}
 #rightPane{display:flex;flex-direction:column;gap:18px;min-height:0}
 .panel{background:#111b2b;border:1px solid #1b2439;border-radius:16px;padding:18px;display:flex;flex-direction:column;gap:14px;box-shadow:0 24px 45px rgba(0,6,26,0.4)}
@@ -267,7 +299,7 @@ main{display:grid;grid-template-columns:minmax(440px,55%) minmax(480px,1fr);gap:
     </div>
   </section>
   <section id="rightPane">
-    <div class="panel codePanel">
+    <div class="panel codePanel" style="flex:1.2">
       <div class="panelHead">
         <div>
           <div class="panelTitle">Source Trace</div>
@@ -276,16 +308,7 @@ main{display:grid;grid-template-columns:minmax(440px,55%) minmax(480px,1fr);gap:
       </div>
       <div id="code"><div class="emptyMessage">브라우저 연결을 기다리는 중…</div></div>
     </div>
-    <div class="panel" id="stackPanel">
-      <div class="panelHead">
-        <div>
-          <div class="panelTitle">Call Stack</div>
-          <div class="panelSub">최신 프레임이 맨 아래</div>
-        </div>
-      </div>
-      <pre id="stack" class="panelBody"></pre>
-    </div>
-    <div class="panel" id="varsPanel">
+    <div class="panel" id="varsPanel" style="flex:0.4">
       <div class="panelHead">
         <div>
           <div class="panelTitle">Local Variables</div>
@@ -461,6 +484,7 @@ function setActiveFunction(id){
   updateEdges();
 }
 function renderStack(stack){
+  if(!stackEl) return;
   if(!stack||!stack.length){ stackEl.textContent=''; return; }
   const rows=stack.map((s,i)=>(i===stack.length-1?'➤ ':'   ')+s);
   stackEl.textContent=rows.join(LINE_BREAK);

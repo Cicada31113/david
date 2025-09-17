@@ -5,8 +5,8 @@
 import os, zipfile, csv, pickle, math
 import numpy as np  # 문제 3에서만 사용 (그 외 외부 패키지 사용 금지)
 
-zip_dir = os.path.dirname(os.path.realpath(__file__))
-zip_path = os.path.join(zip_dir, 'mars_base.zip') 
+zip_dir = os.path.dirname(os.path.realpath(__file__))              # 혼용해서 쓰는 단어도 있다, 거푸집 = CLASS / 절차형이었다가 변형되다보니
+zip_path = os.path.join(zip_dir, 'mars_base.zip')                  # .env 등 파일찾기 매크로 
 
 def unzip_file(zip_dir, zip_path):
     try:
@@ -28,7 +28,7 @@ def unzip_file(zip_dir, zip_path):
 #---------------------------------------------------------------------------------------
 #이진파일은 포맷자체가 지정되어있지 않은 상태여서 이후에 내가 어떤 유틸리티설정을 하느냐에 따라 달라질 수 있다.
 
-def read_csv(filename):
+def read_csv(filename):   #필드명(열제목), 필드(열) 
     out1 = []
     try:
         with open (filename, 'r', encoding='utf-8') as f:
@@ -59,7 +59,7 @@ def write_csv(header, data, filename):
             writer = csv.writer(f)
             writer.writerow(header)
             for row in data:
-                row[-1] = f"{float(row[-1]): .3f}"      # 인화성 지수(마지막 열) 소수점 3자리 고정
+                row[-1] = f"{float(row[-1]): .3f}"      # 인화성 지수(마지막 열) 소수점 3자리 고정 /// # : < > .3f 이 안에 뭐 집어넣으면 반복
                 writer.writerow(row)            
         print(f'{filename} 파일 저장 완료되었습니다')
     except OSError as e:
@@ -106,7 +106,7 @@ DENSITY_G_CM3 = {  # g/cm^3
     'carbon_steel': 7.85,
 }
 G_EARTH = 9.80665
-MARS_G_RATIO = 0.38
+MARS_G_RATIO = 0.38  # 물리관련 상수 라이브러리가 있다
 
 
 # ---------- 문제 1: 인벤토리 파이프라인(표준 라이브러리만) ----------
@@ -139,7 +139,7 @@ def task1_inventory():
     for r in sorted_rows[:10]:
         front = r[:-1]
         last = float(r[-1])
-        print(', '.join(front + [f'{last:.3f}']))
+        print(', '.join(front + [f'{last: .3f}']))
 
     # 3) 필터: flammability index >= 0.7
     danger_rows = []
@@ -170,7 +170,7 @@ def task1_inventory():
             try:
                 front = r[:-1]
                 last = float(r[-1])
-                print(', '.join(front + [f'{last:.3f}']))
+                print(', '.join(front + [f'{last: .3f}']))
             except Exception:
                 print(', '.join(r))
 
@@ -215,8 +215,8 @@ def sphere_area():
         # 화성 무게(N) = m × g(지구) × 0.38
         weight_on_mars_N = mass_kg * G_EARTH * MARS_G_RATIO
 
-        print(f'재질 ⇒ {material}, 지름 ⇒ {diameter_m:.3f}, 두께 ⇒ {thickness_cm:.3f}, 면적 ⇒ {surface_area_m2:.3f}, 무게 ⇒ {weight_on_mars_N:.3f} N')
-        print(f'(참고) 질량 ⇒ {mass_kg:.3f} kg')
+        print(f'재질 ⇒ {material}, 지름 ⇒ {diameter_m: .3f}, 두께 ⇒ {thickness_cm:.3f}, 면적 ⇒ {surface_area_m2:.3f}, 무게 ⇒ {weight_on_mars_N:.3f} N')
+        print(f'(참고) 질량 ⇒ {mass_kg: .3f} kg')
 
         # 예시 포맷(kg 유사) 병기 옵션
         weight_kgf_mars = mass_kg * 0.38
@@ -300,7 +300,7 @@ def task3_parts_with_numpy():
     names_all = np.concatenate(names_all_list).astype(str)
     vals_all  = np.concatenate(vals_all_list).astype(float)
 
-    # 3) 항목별 평균
+    # 3) 항목별 평균  (unique 집합으로 만들어준다)
     uniq, inv = np.unique(names_all, return_inverse=True)
     sums   = np.bincount(inv, weights=vals_all, minlength=len(uniq))
     counts = np.bincount(inv, minlength=len(uniq))
