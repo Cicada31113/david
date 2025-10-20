@@ -73,19 +73,16 @@ def find_zip_entry_password_worker(start_idx, end_idx, found_event, found_queue,
     """
     워커 프로세스: 할당된 범위의 비밀번호를 시도하여 ZIP 파일 안의 특정 파일을 읽습니다.
     """
+    # itertools.product를 사용하여 정확하고 순차적인 암호 조합을 생성합니다.
+    # islice를 통해 각 워커는 할당된 부분(slice)만 처리합니다.
+    password_generator = itertools.islice(itertools.product(CHARSET, repeat=PW_LENGTH), start_idx, end_idx)
     local_attempts = 0
-    for i in range(start_idx, end_idx):
+
+    for password_tuple in password_generator:
         if found_event.is_set():
             break
-
-        # 인덱스를 비밀번호 문자열로 변환
-        temp_i = i
-        password = ''
-        for _ in range(PW_LENGTH):
-            password += CHARSET[temp_i % len(CHARSET)]
-            temp_i //= len(CHARSET)
-        password = password[::-1]
-
+        
+        password = ''.join(password_tuple)
         local_attempts += 1
         try:
             # 각 시도마다 zipfile 객체를 새로 생성하여 파일 핸들 충돌을 방지합니다.
