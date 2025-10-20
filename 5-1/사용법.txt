@@ -1,0 +1,8 @@
+# 1) 시뮬레이트 모드로 타겟 해시와 함께 (해시 알고 있을 때)
+python door_hacking01.py --mode simulate --target-hash <HEX_SHA256> --workers 8 --time-limit 600
+
+# 2) 워드리스트를 주고 워드 포함시 즉시 중단
+python door_hacking01.py --wordlist ./wordlist.txt --stop-on-dict-match --workers 8 --time-limit 600 --dump-candidates candidates.txt
+
+# 3) 생성 후보를 파일로 받아보고 싶을 때 (producer가 append)
+python door_hacking01.py --dump-candidates ./candidates.txt --workers 8 --time-limit 120

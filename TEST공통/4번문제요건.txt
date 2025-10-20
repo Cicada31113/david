@@ -1,0 +1,44 @@
+[문제 설명]
+- 반구체 돔의 표면적과 “화성 중력 반영” 무게를 계산하는 프로그램. 
+
+[핵심 함수/반환]
+- 함수: sphere_area(diameter: float, material: str, thickness: float = 1.0) -> tuple[float, float] 
+- 반환: (area_m2, mars_weight_kg) 
+
+[입력]
+- input()으로 지름(diameter, m)과 재질(material) 입력, 두께(thickness, cm)는 선택 입력(빈 입력이면 1로 처리) 【
+- 재질 입력은 “한글만” 허용(공백 트리밍 권장) 
+
+[재질/밀도(g/cm³)]
+- 유리 2.4, 알루미늄 2.7, 탄소강 7.85 
+
+[면적 계산식]
+- area_m2 = π × (diameter)²  (math.pi 사용)
+
+[질량·무게 계산]
+- area_cm2 = area_m2 × 10000  (m²→cm²)
+- volume_cm3 ≈ area_cm2 × thickness_cm
+- mass_kg = density × volume_cm3 ÷ 1000
+- mars_weight_kg = mass_kg × 0.38
+
+[출력 형식]
+- 정확히 한 줄:  재질 : {kor}, 지름 : {d}, 두께 : {t}, 면적 : {area:.3f}, 무게 : {w:.3f} kg
+- 지름/두께는 {:g} 포맷, 면적/무게는 :.3f 고정 소수점
+
+[입력 프롬프트(권장)]
+- 지름(m)을 입력하세요:
+- 재질(유리/알루미늄/탄소강)을 입력하세요:
+- 두께(cm)를 입력하세요(기본값 1): (빈 입력이면 1 처리) 
+
+[예외 처리 규칙/우선순위]
+- 입력값 오류(지름 비었거나/숫자 아님/≤0, 재질 목록 외, 두께 숫자 아님 또는 ≤0) → print('Invalid input.') 후 즉시 종료 
+- 함수 내부 검증 실패(ValueError) → print('Invalid input.')
+- 그 외 처리 단계 오류 → print('Processing error.')
+- 모든 예외는 print 후 return 종료, 메시지 정확히 일치, exit/sys.exit 금지【
+
+[구현/제약]
+- 파일명: design_dome.py
+- 표준 라이브러리만 사용
+- 필수 함수명/시그니처는 위와 동일
+- 실행 블록: if __name__ == '__main__':  main()
+- PEP 8: 기본 문자열은 ' 사용, = 양쪽 공백, 들여쓰기는 공백
