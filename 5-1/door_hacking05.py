@@ -70,11 +70,6 @@ def find_zip_entry_password_worker(start_idx, end_idx, found_event, found_queue,
     """
     워커 프로세스: 할당된 범위의 비밀번호를 시도하여 ZIP 파일 안의 특정 파일을 읽습니다.
     """
-    try:
-        zip_file = zipfile.ZipFile(ZIP_FILENAME, 'r')
-    except (FileNotFoundError, zipfile.BadZipFile):
-        return
-
     local_attempts = 0
     for i in range(start_idx, end_idx):
         if found_event.is_set():
@@ -90,8 +85,9 @@ def find_zip_entry_password_worker(start_idx, end_idx, found_event, found_queue,
 
         local_attempts += 1
         try:
-            # 비밀번호를 바이트로 인코딩하여 압축 해제 시도
-            decrypted_content = zip_file.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
+            # [수정] 각 시도마다 zipfile 객체를 새로 생성하여 파일 핸들 충돌을 방지합니다.
+            with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
+                decrypted_content = zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
 
             # 성공 시, 다른 프로세스에 알리고 결과 전달
             if not found_event.is_set():
