@@ -97,13 +97,17 @@ def find_zip_entry_password_worker(start_idx, end_idx, found_event, found_queue,
                 found_event.set()
                 found_queue.put((password, decrypted_content))
             break  # 성공했으므로 루프 종료
+        except NotImplementedError:
+            # zipfile 라이브러리가 지원하지 않는 암호화 방식(예: AES)일 수 있습니다.
+            print(f'\n[ERROR] The encryption method of {ZIP_FILENAME} is not supported by the zipfile library. Try using hashcat.')
+            if not found_event.is_set():
+                found_event.set() # 다른 워커들도 중단시킴
+            break
         except (RuntimeError, zipfile.BadZipFile):
             # 잘못된 비밀번호일 경우 계속 진행
             if local_attempts % 50000 == 0:  # 너무 잦은 업데이트 방지
                 progress_queue.put(50000)
                 local_attempts = 0
-        except Exception:
-            continue
 
     progress_queue.put(local_attempts)  # 남은 시도 횟수 보고
 
@@ -221,6 +225,10 @@ def caesar_cipher_decode(target_text):
                 # 대문자 변환: (현재 알파벳 위치 - shift 값) % 26
                 shifted_code = (ord(char) - ord('A') - shift + 26) % 26
                 result += chr(ord('A') + shifted_code)
+            elif '0' <= char <= '9':
+                # 숫자 변환: (현재 숫자 값 - shift 값) % 10
+                shifted_digit = (int(char) - shift + 10) % 10
+                result += str(shifted_digit)
             else:
                 # 알파벳이 아닌 경우(숫자, 공백, 특수문자)는 그대로 유지
                 result += char
