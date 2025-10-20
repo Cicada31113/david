@@ -108,6 +108,11 @@ def find_zip_entry_password_worker(start_idx, end_idx, found_event, found_queue,
             if local_attempts % 50000 == 0:  # 너무 잦은 업데이트 방지
                 progress_queue.put(50000)
                 local_attempts = 0
+        except Exception:
+            # 위에서 명시적으로 처리한 예외 외의 모든 예외 (zlib.error, struct.error 등)는
+            # 암호가 틀린 경우로 간주하고 계속 진행합니다.
+            # 이 블록이 없으면 예상치 못한 예외 발생 시 워커가 그냥 종료됩니다.
+            continue
 
     progress_queue.put(local_attempts)  # 남은 시도 횟수 보고
 
