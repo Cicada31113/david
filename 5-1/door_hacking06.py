@@ -10,8 +10,8 @@ import sys
 # --- 상수 정의 ---
 ZIP_FILENAME = 'emergency_storage_key.zip'
 TARGET_FILE_IN_ZIP = 'password.txt'  # ZIP 파일 안의 암호화된 파일
-ZIP_PASSWORD_FILENAME = 'zip_password.txt'  # ZIP을 푼 6자리 암호를 저장할 파일
-CAESAR_CIPHER_FILENAME = 'caesar_cipher_source.txt'  # 해독할 카이사르 암호문 원본을 저장할 파일
+ZIP_PASSWORD_FILENAME = 'password2.txt'  # ZIP을 푼 6자리 암호를 저장할 파일
+CAESAR_CIPHER_FILENAME = 'password3.txt'  # 해독할 카이사르 암호문 원본을 저장할 파일
 RESULT_FILENAME = 'result.txt'  # 최종 해독 결과를 저장할 파일
 CHARSET = string.ascii_lowercase + string.digits
 PW_LENGTH = 6
@@ -82,34 +82,48 @@ def find_zip_entry_password_worker(start_idx, end_idx, found_event, found_queue,
         if found_event.is_set():
             break
         
+
         password = ''.join(password_tuple)
         local_attempts += 1
-        try:
-            # 각 시도마다 zipfile 객체를 새로 생성하여 파일 핸들 충돌을 방지합니다.
-            with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
-                decrypted_content = zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
 
-            # 성공 시, 다른 프로세스에 알리고 결과 전달
+        # 1. [암호 검증] 7-Zip의 테스트('t') 모드로 암호가 맞는지 빠르게 확인합니다.
+        # 이 단계에서는 파일을 실제로 풀지 않습니다.
+        test_command = [
+            '7z', 't',  # 't'는 테스트 모드입니다. 파일을 실제로 풀지 않고 암호만 검사하여 빠릅니다.
+            f'-p{password}',  # -p 뒤에 공백 없이 암호를 붙입니다.
+            '-y',  # 모든 프롬프트에 'yes'로 자동 응답합니다.
+            ZIP_FILENAME
+        ]
+
+        password_is_correct = False
+        try:
+            # check=True: 실패(암호 틀림) 시 CalledProcessError 발생
+            # capture_output=True: stdout/stderr를 숨김
+            subprocess.run(test_command, check=True, capture_output=True)
+            password_is_correct = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # CalledProcessError: 암호가 틀렸다는 의미.
+            # FileNotFoundError: 7z 명령어를 찾을 수 없음.
+            # 두 경우 모두 다음 암호를 시도합니다.
+            continue
+
+        # 2. [내용 추출] 암호가 맞다면, 7-Zip으로 파일 내용을 추출합니다.
+        if password_is_correct:
+            extract_command = [
+                '7z', 'e',  # 'e'는 추출(extract) 모드입니다.
+                f'-p{password}',
+                '-so',  # stdout으로 파일 내용을 출력합니다.
+                '-y',
+                ZIP_FILENAME,
+                TARGET_FILE_IN_ZIP
+            ]
+            result = subprocess.run(extract_command, capture_output=True)
+            content = result.stdout
+
             if not found_event.is_set():
                 found_event.set()
-                found_queue.put((password, decrypted_content))
-            break  # 성공했으므로 루프 종료
-        except NotImplementedError:
-            # zipfile 라이브러리가 지원하지 않는 암호화 방식(예: AES)일 수 있습니다.
-            print(f'\n[ERROR] The encryption method of {ZIP_FILENAME} is not supported by the zipfile library. Try using hashcat.')
-            if not found_event.is_set():
-                found_event.set() # 다른 워커들도 중단시킴
-            break
-        except (RuntimeError, zipfile.BadZipFile):
-            # 잘못된 비밀번호일 경우 계속 진행
-            if local_attempts % 50000 == 0:  # 너무 잦은 업데이트 방지
-                progress_queue.put(50000)
-                local_attempts = 0
-        except Exception:
-            # 위에서 명시적으로 처리한 예외 외의 모든 예외 (zlib.error, struct.error 등)는
-            # 암호가 틀린 경우로 간주하고 계속 진행합니다.
-            # 이 블록이 없으면 예상치 못한 예외 발생 시 워커가 그냥 종료됩니다.
-            continue
+                found_queue.put((password, content))
+            return  # 성공했으므로 워커 종료
 
     progress_queue.put(local_attempts)  # 남은 시도 횟수 보고
 
