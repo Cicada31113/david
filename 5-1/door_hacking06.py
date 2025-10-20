@@ -86,6 +86,11 @@ def find_zip_entry_password_worker(start_idx, end_idx, found_event, found_queue,
         password = ''.join(password_tuple)
         local_attempts += 1
 
+        # [수정] 50,000번 시도할 때마다 진행 상황을 보고하여 실시간으로 확인할 수 있게 합니다.
+        if local_attempts % 50000 == 0:
+            progress_queue.put(50000)
+            local_attempts = 0 # 카운터를 리셋하여 다음 보고 주기를 계산합니다.
+
         # 1. [암호 검증] 7-Zip의 테스트('t') 모드로 암호가 맞는지 빠르게 확인합니다.
         # 이 단계에서는 파일을 실제로 풀지 않습니다.
         test_command = [
