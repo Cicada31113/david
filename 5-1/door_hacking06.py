@@ -7,8 +7,6 @@ import zipfile
 import zlib
 import os
 import subprocess
-import platform
-import requests
 import sys
 
 # --- 상수 정의 ---
@@ -17,7 +15,6 @@ TARGET_FILE_IN_ZIP = 'password.txt'  # ZIP 파일 안의 암호화된 파일 (�
 ZIP_PASSWORD_FILENAME = 'password2.txt'  # ZIP을 푼 6자리 암호를 저장할 파일
 CAESAR_CIPHER_FILENAME = 'password3.txt'  # 해독할 카이사르 암호문 원본을 저장할 파일
 RESULT_FILENAME = 'result.txt'  # 최종 해독 결과를 저장할 파일
-TOOLS_DIR = os.path.join(os.path.dirname(__file__), 'tools') # 도구 설치 디렉터리
 CHARSET = string.ascii_lowercase + string.digits
 PW_LENGTH = 6
 KEYSPACE = len(CHARSET) ** PW_LENGTH
@@ -29,132 +26,14 @@ COMMON_WORDS = {
     'secret', 'key', 'code', 'unlock', 'access', 'admin'
 }
 
-def setup_tools():
-    """hashcat과 zip2john을 무설치(portable) 버전으로 자동 준비합니다."""
-    os.makedirs(TOOLS_DIR, exist_ok=True)
-
-    # 실행 파일 경로 정의
-    system = platform.system()
-    hashcat_dir_name = 'hashcat-6.2.6'
-    john_dir_name = 'john-1.9.0-jumbo-1-win64' if system == 'Windows' else 'john-1.9.0-jumbo-1'
-
-    hashcat_exe = 'hashcat.exe' if system == 'Windows' else 'hashcat.bin'
-    zip2john_exe = 'zip2john.exe' if system == 'Windows' else 'zip2john'
-
-    hashcat_path = os.path.join(TOOLS_DIR, hashcat_dir_name, hashcat_exe)
-    zip2john_path = os.path.join(TOOLS_DIR, john_dir_name, 'run', zip2john_exe)
-
-    def download_and_unzip(url, tool_name, target_dir):
-        """지정된 URL에서 zip 파일을 다운로드하고 압축을 해제합니다."""
-        if os.path.exists(target_dir):
-            print(f"[SETUP] {tool_name} already exists. Skipping download.")
-            return True
-        print(f"[SETUP] {tool_name} not found. Attempting to download and install...")
-        try:
-            zip_path = os.path.join(TOOLS_DIR, f'{tool_name}.zip')
-            print(f"Downloading {tool_name} from {url}...")
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            with open(zip_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            
-            print(f"Download complete. Extracting {tool_name}...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(TOOLS_DIR)
-            os.remove(zip_path)
-            print(f"[SETUP] {tool_name} setup complete.")
-            return True
-        except Exception as e:
-            print(f"[ERROR] Failed to setup {tool_name}: {e}")
-            return False
-
-    # 1. Hashcat 설치 확인 및 설치
-    if not os.path.exists(hashcat_path):
-        if system == 'Windows':
-            # 공식 7z 대신 zip으로 재압축된 버전을 사용 (자동화를 위함)
-            hashcat_url = "https://github.com/hansent/portable-tools/raw/main/hashcat-6.2.6_win.zip"
-            download_and_unzip(hashcat_url, 'hashcat', os.path.join(TOOLS_DIR, hashcat_dir_name))
-        else: # Linux/macOS
-            print("On Linux/macOS, please install hashcat via package manager (e.g., 'sudo apt install hashcat') or place it manually in 'tools/hashcat-6.2.6/'.")
-
-    # 2. John the Ripper (zip2john) 설치 확인 및 설치
-    if not os.path.exists(zip2john_path):
-        if system == 'Windows':
-            john_url = "https://github.com/openwall/john-packages/releases/download/jumbo-v1/john-1.9.0-jumbo-1-win64.zip"
-            download_and_unzip(john_url, 'john', os.path.join(TOOLS_DIR, john_dir_name))
-        else: # Linux/macOS
-            print("On Linux/macOS, please install 'john' via package manager or place it manually in 'tools/john-1.9.0-jumbo-1/'.")
-
-    return {
-        'hashcat': hashcat_path if os.path.exists(hashcat_path) else None,
-        'zip2john': zip2john_path if os.path.exists(zip2john_path) else None
-    }
-
-
-def run_hashcat():
+def generate_structured_candidates():
     """
-    시스템에 hashcat이 설치된 경우 GPU 가속을 시도합니다.
-    zip2john으로 해시를 추출하여 공격합니다.
-    """
-    tools = setup_tools()
-    hashcat_executable = tools.get('hashcat')
-    zip2john_executable = tools.get('zip2john')
-
-    if not hashcat_executable or not zip2john_executable:
-        print('[INFO] hashcat or zip2john not available. Falling back to CPU brute-force.')
-        return None
-
-    # 1. zip2john으로 해시 추출
-    try:
-        print("[INFO] Extracting hash from ZIP file using zip2john...")
-        result = subprocess.run([zip2john_executable, ZIP_FILENAME], capture_output=True, text=True, check=True, encoding='utf-8', errors='ignore')
-        hash_line = result.stdout.strip().splitlines()[0]
-        # hashcat이 인식할 수 있도록 파일 이름 부분만 추출
-        hash_data = hash_line.split(':', 1)[1]
-        hash_file = 'zip.hash'
-        with open(hash_file, 'w') as f:
-            f.write(hash_data)
-    except Exception as e:
-        print(f"[ERROR] Failed to run zip2john: {e}")
-        return None
-
-    print('[INFO] Hash extracted. Attempting GPU-accelerated cracking with hashcat...')
-    # 2. hashcat으로 공격
-    command = [
-        hashcat_executable,
-        '-m', '17210',  # PKZIP (Compressed) -> 17210이 더 일반적인 PKZIP 모드
-        '-a', '3',      # Brute-force (mask)
-        hash_file,
-        '--increment',
-        f'--increment-min={PW_LENGTH}',
-        f'--increment-max={PW_LENGTH}',
-        '-1', string.ascii_lowercase + string.digits,
-        '?1?1?1?1?1?1',
-        '--potfile-disable',  # potfile 사용 안함
-        '--outfile-format=2',  # 암호만 출력
-        '--quiet'
-    ]
-    try:
-        # hashcat 실행 (타임아웃을 길게 설정하거나, 사용자가 중단할 때까지 실행)
-        result = subprocess.run(command, capture_output=True, text=True, timeout=1800)  # 30분 타임아웃
-        if result.stdout:
-            password = result.stdout.strip().splitlines()[-1]
-            print(f'\n[INFO] Hashcat found password: {password}')
-            return password
-    except subprocess.TimeoutExpired:
-        print('\n[INFO] Hashcat timed out. No password found with GPU.')
-    except Exception as e:
-        print(f'\n[ERROR] An error occurred with hashcat: {e}')
-    return None
-
-
-def generate_high_probability_candidates():
-    """
-    엔트로피가 낮고 사용 빈도가 높은 고확률 암호 후보군을 생성합니다.
-    (반복, 순차, 흔한 패턴 등)
+    수학적/구조적 패턴에 기반한 고확률 암호 후보군을 생성합니다.
+    (순차, 반복, 문자/숫자 조합 등)
     """
     candidates = set()
+    alphas = string.ascii_lowercase
+    digits = string.digits
 
     # 1. 반복 패턴 (e.g., 'aaaaaa', '111111')
     for char in CHARSET:
@@ -167,63 +46,27 @@ def generate_high_probability_candidates():
         rev_seq = CHARSET[i:i + PW_LENGTH][::-1]
         candidates.add(rev_seq)
 
-    # 3. 흔한 단어 기반 패턴 (패딩 추가)
-    common_base = ['admin', 'password', 'secret', 'qwerty', '123456', '123', 'abc']
-    for word in common_base:
-        if len(word) <= PW_LENGTH:
-            # 숫자, 'a', '0' 등으로 패딩
-            padding_chars = ['1', 'a', '0']
-            for pad_char in padding_chars:
-                padded = (word + pad_char * PW_LENGTH)[:PW_LENGTH]
-                candidates.add(padded)
+    # 3. 키보드 패턴 (qwerty, asdf)
+    candidates.add('qwerty')
+    candidates.add('asdfgh')
 
-    print(f"[INFO] 생성된 고확률 후보군: {len(candidates):,}개")
+    # 4. 문자/숫자 조합 패턴 (가장 확률 높은 패턴)
+    # 예: alpha(4) + digit(2) -> test12
+    # 메모리 과사용을 막기 위해 각 조합에서 일부만 샘플링
+    sampling_limit = 2000
+    for alpha_len in range(1, PW_LENGTH):
+        digit_len = PW_LENGTH - alpha_len
+        
+        # Alpha + Digit
+        alpha_samples = [''.join(p) for p in itertools.islice(itertools.product(alphas, repeat=alpha_len), sampling_limit)]
+        digit_samples = [''.join(p) for p in itertools.islice(itertools.product(digits, repeat=digit_len), sampling_limit)]
+        for a in alpha_samples:
+            for d in digit_samples:
+                candidates.add(a + d)
+                candidates.add(d + a) # Digit + Alpha
+
+    print(f"[INFO] 생성된 구조적 후보군: {len(candidates):,}개")
     return list(candidates)
-
-
-def generate_probabilistic_hotspots(num_hotspots=5):
-    """
-    양자 중첩 아이디어에서 착안, 가장 확률이 높은 암호 공간 '핫스팟'을 생성합니다.
-    핫스팟은 (마스크, 문자셋) 형태로 정의됩니다. 예: ('pass??', '0123...9')
-    """
-    hotspots = []
-    
-    # 핫스팟 1: 'pass' + 2자리 숫자/소문자
-    hotspots.append(('pass??', string.digits + string.ascii_lowercase))
-    
-    # 핫스팟 2: 'admin' + 1자리 숫자/소문자
-    hotspots.append(('admin?', string.digits + string.ascii_lowercase))
-
-    # 핫스팟 3: 4자리 숫자 + '00'
-    hotspots.append(('????00', string.digits))
-
-    # 핫스팟 4: 'qwerty' 또는 '123456' 같은 순차 패턴
-    hotspots.append(('123456', None)) # 고정값
-    hotspots.append(('qwerty', None)) # 고정값
-
-    # 핫스팟 5: 반복되는 문자 (e.g., aaaaaa)
-    for char in 'abcdefghijklmnopqrstuvwxyz0123456789':
-        hotspots.append((char*6, None))
-
-    print(f"[INFO] {len(hotspots)}개의 확률적 핫스팟 생성 완료.")
-    return hotspots
-
-
-def expand_hotspot(mask, charset):
-    """핫스팟 마스크를 실제 암호 후보 리스트로 확장합니다."""
-    if '?' not in mask:
-        return [mask]
-
-    q_indices = [i for i, char in enumerate(mask) if char == '?']
-    num_q = len(q_indices)
-    
-    candidates = []
-    for combo in itertools.product(charset, repeat=num_q):
-        temp_list = list(mask)
-        for i, char in zip(q_indices, combo):
-            temp_list[i] = char
-        candidates.append("".join(temp_list))
-    return candidates
 
 
 class PkzipLegacy:
@@ -325,19 +168,10 @@ def unlock_zip():
     print(f"[INFO] Starting password search for '{TARGET_FILE_IN_ZIP}' inside '{ZIP_FILENAME}'...")
 
     # 1. GPU 가속 시도
-    password = run_hashcat()
-    if password:
-        try:
-            with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
-                content = zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
-            found_result = (password, content)
-        except Exception as e:
-            print(f'[ERROR] Hashcat found a password, but failed to extract file: {e}')
-            found_result = None  # CPU로 재시도
-    else:
-        found_result = None
+    print("[INFO] GPU (hashcat) attack is disabled. Proceeding with CPU-only attack.")
+    found_result = None
 
-    # 2. GPU 실패/미설치 시 CPU 병렬 처리 (CRC32 사전 계산 공격)
+    # 2. CPU 병렬 처리 (CRC32 사전 계산 공격)
     if not found_result:
         # 2-1. ZIP 파일 헤더에서 CRC32와 암호화된 헤더 12바이트 추출
         try:
@@ -365,7 +199,7 @@ def unlock_zip():
         if single_core_rate > 0:
             estimated_rate = single_core_rate * num_workers * 0.9 # 병렬 처리 오버헤드 감안
             estimated_seconds = KEYSPACE / estimated_rate
-            estimated_time_str = time.strftime('%M minutes, %S seconds', time.gmtime(estimated_seconds))
+            estimated_time_str = time.strftime('%H hours, %M minutes, %S seconds', time.gmtime(estimated_seconds))
             print(f"[INFO] System benchmark: ~{single_core_rate:,.0f} p/s per core (CRC32 method).")
             print(f"[INFO] With {num_workers} cores, estimated total time for full scan: {estimated_time_str}")
         
@@ -377,26 +211,17 @@ def unlock_zip():
         task_queue = mp.Queue()
 
         # --- 동적 작업 분배를 위한 작업 생성 ---
-        # 1. 구조적 패턴(핫스팟)을 최우선으로 큐에 추가
-        hotspots = generate_probabilistic_hotspots()
-        hotspot_candidates = set()
-
-        def populate_hotspots():
-            for mask, charset in hotspots:
-                if found_event.is_set(): break
-                candidates = expand_hotspot(mask, charset if charset else "")
-                hotspot_candidates.update(candidates)
-            task_queue.put(list(hotspot_candidates))
-
-        hotspot_producer_thread = threading.Thread(target=populate_hotspots)
-        hotspot_producer_thread.start()
-
+        # 1. 구조적 후보군을 최우선으로 큐에 추가
+        structured_candidates = generate_structured_candidates()
+        task_queue.put(structured_candidates)
 
         # 2. (안전장치) 전체 키스페이스에 대한 무차별 대입 작업을 배치 단위로 생성
         def populate_queue():
-            high_prob_set = hotspot_candidates
+            # 이미 생성된 구조적 후보군은 제외하여 중복 작업 방지
+            # 이 과정이 오래 걸릴 수 있으므로, set으로 변환하여 빠르게 조회
+            high_prob_set = set(structured_candidates)
             password_generator = (''.join(p) for p in itertools.product(CHARSET, repeat=PW_LENGTH) if ''.join(p) not in high_prob_set)
-            batch_size = 500000 # 배치 크기를 늘려 오버헤드 감소
+            batch_size = 1000000 # 배치 크기를 늘려 오버헤드 감소
             while not found_event.is_set():
                 batch = list(itertools.islice(password_generator, batch_size))
                 if not batch:
@@ -434,7 +259,6 @@ def unlock_zip():
             found_result = found_queue.get()
 
         # 작업 생성 스레드 및 워커 프로세스 정리
-        hotspot_producer_thread.join()
         producer_thread.join()
 
         for p in processes:
