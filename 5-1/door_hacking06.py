@@ -30,40 +30,65 @@ COMMON_WORDS = {
 }
 
 def setup_tools():
-    """hashcat과 john the ripper(zip2john)를 자동으로 설치합니다."""
+    """hashcat과 zip2john을 무설치(portable) 버전으로 자동 준비합니다."""
     os.makedirs(TOOLS_DIR, exist_ok=True)
-    hashcat_path = os.path.join(TOOLS_DIR, 'hashcat')
-    john_path = os.path.join(TOOLS_DIR, 'john', 'run', 'john')
+
+    # 실행 파일 경로 정의
+    system = platform.system()
+    hashcat_dir_name = 'hashcat-6.2.6'
+    john_dir_name = 'john-1.9.0-jumbo-1-win64' if system == 'Windows' else 'john-1.9.0-jumbo-1'
+
+    hashcat_exe = 'hashcat.exe' if system == 'Windows' else 'hashcat.bin'
+    zip2john_exe = 'zip2john.exe' if system == 'Windows' else 'zip2john'
+
+    hashcat_path = os.path.join(TOOLS_DIR, hashcat_dir_name, hashcat_exe)
+    zip2john_path = os.path.join(TOOLS_DIR, john_dir_name, 'run', zip2john_exe)
+
+    def download_and_unzip(url, tool_name, target_dir):
+        """지정된 URL에서 zip 파일을 다운로드하고 압축을 해제합니다."""
+        if os.path.exists(target_dir):
+            print(f"[SETUP] {tool_name} already exists. Skipping download.")
+            return True
+        print(f"[SETUP] {tool_name} not found. Attempting to download and install...")
+        try:
+            zip_path = os.path.join(TOOLS_DIR, f'{tool_name}.zip')
+            print(f"Downloading {tool_name} from {url}...")
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            with open(zip_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            print(f"Download complete. Extracting {tool_name}...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(TOOLS_DIR)
+            os.remove(zip_path)
+            print(f"[SETUP] {tool_name} setup complete.")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to setup {tool_name}: {e}")
+            return False
 
     # 1. Hashcat 설치 확인 및 설치
-    if not os.path.exists(hashcat_path) and not os.path.exists(hashcat_path + '.exe'):
-        print("[SETUP] Hashcat not found. Attempting to download and install...")
-        try:
-            system = platform.system()
-            if system == 'Windows':
-                url = "https://hashcat.net/files/hashcat-6.2.6.7z"
-                print(f"Downloading hashcat for Windows from {url}...")
-                response = requests.get(url, stream=True)
-                with open(os.path.join(TOOLS_DIR, 'hashcat.7z'), 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                print("Download complete. Please extract hashcat.7z into the 'tools/hashcat' directory manually.")
-                print("You might need 7-Zip (https://www.7-zip.org/) to extract it.")
-                # 자동 압축 해제는 7z 라이브러리 의존성이 필요하므로 수동 안내
-            else: # Linux/macOS
-                print("Please install hashcat using your system's package manager (e.g., 'sudo apt install hashcat' or 'brew install hashcat').")
-        except Exception as e:
-            print(f"[ERROR] Failed to setup hashcat: {e}")
+    if not os.path.exists(hashcat_path):
+        if system == 'Windows':
+            # 공식 7z 대신 zip으로 재압축된 버전을 사용 (자동화를 위함)
+            hashcat_url = "https://github.com/hansent/portable-tools/raw/main/hashcat-6.2.6_win.zip"
+            download_and_unzip(hashcat_url, 'hashcat', os.path.join(TOOLS_DIR, hashcat_dir_name))
+        else: # Linux/macOS
+            print("On Linux/macOS, please install hashcat via package manager (e.g., 'sudo apt install hashcat') or place it manually in 'tools/hashcat-6.2.6/'.")
 
     # 2. John the Ripper (zip2john) 설치 확인 및 설치
-    if not os.path.exists(john_path) and not os.path.exists(john_path + '.exe'):
-        print("[SETUP] zip2john (from John the Ripper) not found. Attempting to download...")
-        # John the Ripper는 소스 컴파일이 필요한 경우가 많아, 여기서는 다운로드 안내만 제공
-        print("Please download 'John the Ripper' from https://www.openwall.com/john/ and place the 'run' directory inside 'tools/john'.")
+    if not os.path.exists(zip2john_path):
+        if system == 'Windows':
+            john_url = "https://github.com/openwall/john-packages/releases/download/jumbo-v1/john-1.9.0-jumbo-1-win64.zip"
+            download_and_unzip(john_url, 'john', os.path.join(TOOLS_DIR, john_dir_name))
+        else: # Linux/macOS
+            print("On Linux/macOS, please install 'john' via package manager or place it manually in 'tools/john-1.9.0-jumbo-1/'.")
 
     return {
         'hashcat': hashcat_path if os.path.exists(hashcat_path) else None,
-        'zip2john': os.path.join(TOOLS_DIR, 'john', 'run', 'zip2john') if os.path.exists(john_path) else None
+        'zip2john': zip2john_path if os.path.exists(zip2john_path) else None
     }
 
 
@@ -83,7 +108,7 @@ def run_hashcat():
     # 1. zip2john으로 해시 추출
     try:
         print("[INFO] Extracting hash from ZIP file using zip2john...")
-        result = subprocess.run([zip2john_executable, ZIP_FILENAME], capture_output=True, text=True, check=True)
+        result = subprocess.run([zip2john_executable, ZIP_FILENAME], capture_output=True, text=True, check=True, encoding='utf-8', errors='ignore')
         hash_line = result.stdout.strip().splitlines()[0]
         # hashcat이 인식할 수 있도록 파일 이름 부분만 추출
         hash_data = hash_line.split(':', 1)[1]
@@ -98,7 +123,7 @@ def run_hashcat():
     # 2. hashcat으로 공격
     command = [
         hashcat_executable,
-        '-m', '17200',  # PKZIP (Compressed)
+        '-m', '17210',  # PKZIP (Compressed) -> 17210이 더 일반적인 PKZIP 모드
         '-a', '3',      # Brute-force (mask)
         hash_file,
         '--increment',
