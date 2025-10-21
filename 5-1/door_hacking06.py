@@ -101,31 +101,53 @@ def generate_high_probability_candidates():
     return list(candidates)
 
 
-def find_zip_entry_password_worker(task_queue, found_event, found_queue, progress_queue, worker_id):
+def find_zip_entry_password_worker(task, found_event, found_queue, progress_queue, worker_id):
     """
     워커 프로세스: 할당된 범위의 비밀번호를 시도하여 ZIP 파일 안의 특정 파일을 읽습니다.
+    'task'는 ('high_prob', candidates_list) 또는 ('brute_force', start_idx, end_idx) 형태입니다.
     """
+    mode, *args = task
+    local_attempts = 0
+
+    def check_password(password, zf_handle):
+        try:
+            content = zf_handle.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
+            if not found_event.is_set():
+                found_event.set()
+                found_queue.put((password, content))
+            return True
+        except (RuntimeError, zipfile.BadZipFile):
+            return False
+
     with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
-        while not found_event.is_set():
-            try:
-                # 작업 큐에서 암호 목록(배치)을 가져옴
-                passwords = task_queue.get(timeout=0.1)
-            except mp.queues.Empty:
-                break # 큐가 비었으면 종료
+        if mode == 'high_prob':
+            # 특공조: 고확률 후보군 전체를 담당
+            candidates = args[0]
+            for password in candidates:
+                if found_event.is_set(): return
+                if check_password(password, zf): return
+                local_attempts += 1
+                if local_attempts % 50000 == 0:
+                    progress_queue.put(50000)
+        
+        elif mode == 'brute_force':
+            # 일반 병력: 할당된 숫자 범위를 암호로 변환하여 시도
+            start_idx, end_idx = args
+            password_generator = itertools.islice(itertools.product(CHARSET, repeat=PW_LENGTH), start_idx, end_idx)
 
-            for password in passwords:
-                if found_event.is_set():
-                    return
+            for password_tuple in password_generator:
+                if found_event.is_set(): break
+                
+                password = ''.join(password_tuple)
+                if check_password(password, zf): break
 
-                try:
-                    content = zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
-                    if not found_event.is_set():
-                        found_event.set()
-                        found_queue.put((password, content))
-                    return
-                except (RuntimeError, zipfile.BadZipFile):
-                    continue
-            progress_queue.put(len(passwords))
+                local_attempts += 1
+                if local_attempts % 50000 == 0:
+                    progress_queue.put(50000)
+                    local_attempts = 0 # 카운터 리셋
+    
+    if local_attempts > 0:
+        progress_queue.put(local_attempts)
 
 
 def unlock_zip():
@@ -160,31 +182,34 @@ def unlock_zip():
         found_event = mp.Event()
         found_queue = mp.Queue()
         progress_queue = mp.Queue()
-        task_queue = mp.Queue()
 
-        # --- 지능적인 작업 분배 ---
-        # 1. 특공조(Worker 0)를 위한 고확률 후보군 생성
+        # --- 지능적인 작업 분배 (개선된 방식) ---
+        tasks = []
+        # 1. 특공조(Worker 0)를 위한 고확률 후보군 생성 및 할당
         high_prob_candidates = generate_high_probability_candidates()
-        task_queue.put(high_prob_candidates)
+        tasks.append(('high_prob', high_prob_candidates))
         
         # 2. 나머지 일반 병력을 위한 전체 키스페이스 분할
-        # 고확률 후보군을 제외한 나머지 공간을 탐색
-        brute_force_generator = (p for p in (''.join(p) for p in itertools.product(CHARSET, repeat=PW_LENGTH)) if p not in high_prob_candidates)
+        # 고확률 후보군이 차지하는 부분을 제외하지 않고, 전체 공간을 병렬 탐색
+        # 어차피 특공조가 먼저 찾으면 모든 프로세스가 종료되므로 효율 저하가 거의 없음
+        workers_for_brute_force = num_workers - 1
+        if workers_for_brute_force > 0:
+            chunk_size = KEYSPACE // workers_for_brute_force
+            for i in range(workers_for_brute_force):
+                start_idx = i * chunk_size
+                end_idx = KEYSPACE if i == workers_for_brute_force - 1 else (i + 1) * chunk_size
+                tasks.append(('brute_force', start_idx, end_idx))
         
-        # 작업을 10만개 단위의 배치로 나누어 큐에 추가
-        batch_size = 100000
-        while True:
-            batch = list(itertools.islice(brute_force_generator, batch_size))
-            if not batch:
-                break
-            task_queue.put(batch)
+        # 만약 워커가 1개라면, 고확률 시도 후 전체 무차별 대입 수행
+        if num_workers == 1:
+            tasks.append(('brute_force', 0, KEYSPACE))
 
         processes = []
-        for i in range(num_workers):
-            p = mp.Process(target=find_zip_entry_password_worker, args=(task_queue, found_event, found_queue, progress_queue, i))
+        for i, task in enumerate(tasks):
+            p = mp.Process(target=find_zip_entry_password_worker, args=(task, found_event, found_queue, progress_queue, i))
             processes.append(p)
             p.start()
-            print(f"[INFO] Worker {i} started...")
+            print(f"[INFO] Worker {i} (mode: {task[0]}) started...")
 
         total_attempts = 0
         try:
@@ -193,7 +218,10 @@ def unlock_zip():
                     total_attempts += progress_queue.get(timeout=1)
                     elapsed = time.time() - start_time
                     rate = total_attempts / elapsed if elapsed > 0 else 0
-                    sys.stdout.write(f'\r[CPU] Attempts: {total_attempts:,} ({total_attempts/KEYSPACE:.2%}) | Rate: {rate:,.0f} p/s | Elapsed: {elapsed:.2f}s')
+                    # 고확률 후보군 개수를 전체 진행률 계산에 포함
+                    effective_keyspace = KEYSPACE + len(high_prob_candidates)
+                    progress_percent = total_attempts / effective_keyspace
+                    sys.stdout.write(f'\r[CPU] Attempts: {total_attempts:,} ({progress_percent:.2%}) | Rate: {rate:,.0f} p/s | Elapsed: {elapsed:.2f}s')
                     sys.stdout.flush()
                 except mp.queues.Empty:
                     continue
