@@ -116,7 +116,7 @@ def find_zip_entry_password_worker(task, found_event, found_queue, progress_queu
                 found_event.set()
                 found_queue.put((password, content))
             return True
-        except (RuntimeError, zipfile.BadZipFile):
+        except (RuntimeError, zipfile.BadZipFile, zipfile.zlib.error):
             return False
         except Exception: # 예상치 못한 오류 방지
             return False
@@ -131,15 +131,24 @@ def find_zip_entry_password_worker(task, found_event, found_queue, progress_queu
                     if found_event.is_set(): return
                     if attempt_password(password, zf): return
                     local_attempts += 1
+                    if local_attempts % 50000 == 0:
+                        progress_queue.put(50000)
             elif mode == 'brute_force':
                 start_idx, end_idx = args
                 password_generator = itertools.islice(itertools.product(CHARSET, repeat=PW_LENGTH), start_idx, end_idx)
+                batch_report_size = 50000
                 for password_tuple in password_generator:
                     if found_event.is_set(): return
                     password = ''.join(password_tuple)
                     if attempt_password(password, zf): return
                     local_attempts += 1
-            progress_queue.put(local_attempts)
+                    if local_attempts % batch_report_size == 0:
+                        progress_queue.put(batch_report_size)
+                        local_attempts = 0 # 카운터 리셋
+            
+            # 루프 종료 후 남은 시도 횟수 보고
+            if local_attempts > 0:
+                progress_queue.put(local_attempts)
     except FileNotFoundError:
         print(f"[ERROR] Worker {worker_id}: ZIP file '{ZIP_FILENAME}' not found.")
     except Exception as e:
