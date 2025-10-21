@@ -197,7 +197,7 @@ class PkzipLegacy:
             self.update_keys(byte)
 
     def update_keys(self, byte: int):
-        self.keys[0] = zlib.crc32(bytes([byte]), self.keys[0])
+        self.keys[0] = zlib.crc32(bytes([byte]), self.keys[0]) & 0xffffffff
         self.keys[1] = ((self.keys[1] + (self.keys[0] & 0xff)) * 0x8088405 + 1) & 0xffffffff
         self.keys[2] = zlib.crc32(bytes([(self.keys[1] >> 24) & 0xff]), self.keys[2])
 
