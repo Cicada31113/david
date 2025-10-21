@@ -9,7 +9,7 @@ import sys
 
 # --- 상수 정의 ---
 ZIP_FILENAME = 'emergency_storage_key.zip'
-TARGET_FILE_IN_ZIP = 'password.txt'  # ZIP 파일 안의 암호화된 파일
+TARGET_FILE_IN_ZIP = 'password.txt'  # ZIP 파일 안의 암호화된 파일 (문제 요건)
 ZIP_PASSWORD_FILENAME = 'password2.txt'  # ZIP을 푼 6자리 암호를 저장할 파일
 CAESAR_CIPHER_FILENAME = 'password3.txt'  # 해독할 카이사르 암호문 원본을 저장할 파일
 RESULT_FILENAME = 'result.txt'  # 최종 해독 결과를 저장할 파일
@@ -23,7 +23,7 @@ COMMON_WORDS = {
     'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'password',
     'secret', 'key', 'code', 'unlock', 'access', 'admin'
 }
-
+HIGH_PROB_CANDIDATES_COUNT = 500000 # 고확률 후보군 개수 (조정 가능)
 
 def run_hashcat():
     """
@@ -69,68 +69,63 @@ def run_hashcat():
     return None
 
 
-def find_zip_entry_password_worker(start_idx, end_idx, found_event, found_queue, progress_queue):
+def generate_high_probability_candidates():
+    """
+    엔트로피가 낮고 사용 빈도가 높은 고확률 암호 후보군을 생성합니다.
+    (반복, 순차, 흔한 패턴 등)
+    """
+    candidates = set()
+
+    # 1. 반복 패턴 (e.g., 'aaaaaa', '111111')
+    for char in CHARSET:
+        candidates.add(char * PW_LENGTH)
+
+    # 2. 순차 패턴 (e.g., 'abcdef', '123456')
+    for i in range(len(CHARSET) - PW_LENGTH + 1):
+        candidates.add(CHARSET[i:i + PW_LENGTH])
+        # 역방향 순차 패턴
+        rev_seq = CHARSET[i:i + PW_LENGTH][::-1]
+        candidates.add(rev_seq)
+
+    # 3. 흔한 단어 기반 패턴 (패딩 추가)
+    common_base = ['admin', 'password', 'secret', 'qwerty', '123456', '123', 'abc']
+    for word in common_base:
+        if len(word) <= PW_LENGTH:
+            # 숫자, 'a', '0' 등으로 패딩
+            padding_chars = ['1', 'a', '0']
+            for pad_char in padding_chars:
+                padded = (word + pad_char * PW_LENGTH)[:PW_LENGTH]
+                candidates.add(padded)
+
+    print(f"[INFO] 생성된 고확률 후보군: {len(candidates):,}개")
+    return list(candidates)
+
+
+def find_zip_entry_password_worker(task_queue, found_event, found_queue, progress_queue, worker_id):
     """
     워커 프로세스: 할당된 범위의 비밀번호를 시도하여 ZIP 파일 안의 특정 파일을 읽습니다.
     """
-    # itertools.product를 사용하여 정확하고 순차적인 암호 조합을 생성합니다.
-    # islice를 통해 각 워커는 할당된 부분(slice)만 처리합니다.
-    password_generator = itertools.islice(itertools.product(CHARSET, repeat=PW_LENGTH), start_idx, end_idx)
-    local_attempts = 0
+    with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
+        while not found_event.is_set():
+            try:
+                # 작업 큐에서 암호 목록(배치)을 가져옴
+                passwords = task_queue.get(timeout=0.1)
+            except mp.queues.Empty:
+                break # 큐가 비었으면 종료
 
-    for password_tuple in password_generator:
-        if found_event.is_set():
-            break
-        
+            for password in passwords:
+                if found_event.is_set():
+                    return
 
-        password = ''.join(password_tuple)
-        local_attempts += 1
-
-        # [수정] 50,000번 시도할 때마다 진행 상황을 보고하여 실시간으로 확인할 수 있게 합니다.
-        if local_attempts % 50000 == 0:
-            progress_queue.put(50000)
-            local_attempts = 0 # 카운터를 리셋하여 다음 보고 주기를 계산합니다.
-
-        # 1. [암호 검증] 7-Zip의 테스트('t') 모드로 암호가 맞는지 빠르게 확인합니다.
-        # 이 단계에서는 파일을 실제로 풀지 않습니다.
-        test_command = [
-            '7z', 't',  # 't'는 테스트 모드입니다. 파일을 실제로 풀지 않고 암호만 검사하여 빠릅니다.
-            f'-p{password}',  # -p 뒤에 공백 없이 암호를 붙입니다.
-            '-y',  # 모든 프롬프트에 'yes'로 자동 응답합니다.
-            ZIP_FILENAME
-        ]
-
-        password_is_correct = False
-        try:
-            # check=True: 실패(암호 틀림) 시 CalledProcessError 발생
-            # capture_output=True: stdout/stderr를 숨김
-            subprocess.run(test_command, check=True, capture_output=True)
-            password_is_correct = True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            # CalledProcessError: 암호가 틀렸다는 의미.
-            # FileNotFoundError: 7z 명령어를 찾을 수 없음.
-            # 두 경우 모두 다음 암호를 시도합니다.
-            continue
-
-        # 2. [내용 추출] 암호가 맞다면, 7-Zip으로 파일 내용을 추출합니다.
-        if password_is_correct:
-            extract_command = [
-                '7z', 'e',  # 'e'는 추출(extract) 모드입니다.
-                f'-p{password}',
-                '-so',  # stdout으로 파일 내용을 출력합니다.
-                '-y',
-                ZIP_FILENAME,
-                TARGET_FILE_IN_ZIP
-            ]
-            result = subprocess.run(extract_command, capture_output=True)
-            content = result.stdout
-
-            if not found_event.is_set():
-                found_event.set()
-                found_queue.put((password, content))
-            return  # 성공했으므로 워커 종료
-
-    progress_queue.put(local_attempts)  # 남은 시도 횟수 보고
+                try:
+                    content = zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
+                    if not found_event.is_set():
+                        found_event.set()
+                        found_queue.put((password, content))
+                    return
+                except (RuntimeError, zipfile.BadZipFile):
+                    continue
+            progress_queue.put(len(passwords))
 
 
 def unlock_zip():
@@ -159,21 +154,37 @@ def unlock_zip():
 
     # 2. GPU 실패/미설치 시 CPU 병렬 처리
     if not found_result:
-        print('[INFO] Starting CPU-based brute-force...')
-        num_workers = os.cpu_count()
-        chunk_size = KEYSPACE // num_workers
+        print('[INFO] Starting entropy-based CPU parallel attack...')
+        num_workers = max(1, os.cpu_count())
 
         found_event = mp.Event()
         found_queue = mp.Queue()
         progress_queue = mp.Queue()
+        task_queue = mp.Queue()
+
+        # --- 지능적인 작업 분배 ---
+        # 1. 특공조(Worker 0)를 위한 고확률 후보군 생성
+        high_prob_candidates = generate_high_probability_candidates()
+        task_queue.put(high_prob_candidates)
+        
+        # 2. 나머지 일반 병력을 위한 전체 키스페이스 분할
+        # 고확률 후보군을 제외한 나머지 공간을 탐색
+        brute_force_generator = (p for p in (''.join(p) for p in itertools.product(CHARSET, repeat=PW_LENGTH)) if p not in high_prob_candidates)
+        
+        # 작업을 10만개 단위의 배치로 나누어 큐에 추가
+        batch_size = 100000
+        while True:
+            batch = list(itertools.islice(brute_force_generator, batch_size))
+            if not batch:
+                break
+            task_queue.put(batch)
 
         processes = []
         for i in range(num_workers):
-            start_idx = i * chunk_size
-            end_idx = KEYSPACE if i == num_workers - 1 else (i + 1) * chunk_size
-            p = mp.Process(target=find_zip_entry_password_worker, args=(start_idx, end_idx, found_event, found_queue, progress_queue))
+            p = mp.Process(target=find_zip_entry_password_worker, args=(task_queue, found_event, found_queue, progress_queue, i))
             processes.append(p)
             p.start()
+            print(f"[INFO] Worker {i} started...")
 
         total_attempts = 0
         try:
@@ -182,7 +193,7 @@ def unlock_zip():
                     total_attempts += progress_queue.get(timeout=1)
                     elapsed = time.time() - start_time
                     rate = total_attempts / elapsed if elapsed > 0 else 0
-                    sys.stdout.write(f'\r[CPU] Attempts: {total_attempts:,}/{KEYSPACE:,} ({total_attempts/KEYSPACE:.2%}) | Rate: {rate:,.0f} p/s | Elapsed: {elapsed:.2f}s')
+                    sys.stdout.write(f'\r[CPU] Attempts: {total_attempts:,} ({total_attempts/KEYSPACE:.2%}) | Rate: {rate:,.0f} p/s | Elapsed: {elapsed:.2f}s')
                     sys.stdout.flush()
                 except mp.queues.Empty:
                     continue
@@ -238,22 +249,15 @@ def caesar_cipher_decode(target_text):
     for shift in range(26):
         result = ''
         for char in target_text:
-            if 'a' <= char <= 'z':
-                # 소문자 변환: (현재 알파벳 위치 - shift 값) % 26
-                shifted_code = (ord(char) - ord('a') - shift + 26) % 26
-                result += chr(ord('a') + shifted_code)
-            elif 'A' <= char <= 'Z':
-                # 대문자 변환: (현재 알파벳 위치 - shift 값) % 26
-                shifted_code = (ord(char) - ord('A') - shift + 26) % 26
-                result += chr(ord('A') + shifted_code)
-            elif '0' <= char <= '9':
-                # 숫자 변환: (현재 숫자 값 - shift 값) % 10
-                shifted_digit = (int(char) - shift + 10) % 10
-                result += str(shifted_digit)
-            else:
-                # 알파벳이 아닌 경우(숫자, 공백, 특수문자)는 그대로 유지
+            # islower(), isupper()로 대소문자 구분
+            if char.islower():
+                shifted_code = ord('a') + (ord(char) - ord('a') - shift) % 26
+                result += chr(shifted_code)
+            elif char.isupper():
+                shifted_code = ord('A') + (ord(char) - ord('A') - shift) % 26
+                result += chr(shifted_code)
+            else: # 알파벳이 아니면 그대로 유지
                 result += char
-
         decrypted_results.append(result)
         # 보너스: 해독된 문장에 일반적인 영어 단어가 포함되어 있는지 확인
         # 문장을 소문자로 바꾸고 단어로 분리하여 사전에 있는지 검사합니다.
