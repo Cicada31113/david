@@ -7,6 +7,8 @@ import zipfile
 import zlib
 import os
 import subprocess
+import platform
+import requests
 import sys
 
 # --- 상수 정의 ---
@@ -15,6 +17,7 @@ TARGET_FILE_IN_ZIP = 'password.txt'  # ZIP 파일 안의 암호화된 파일 (�
 ZIP_PASSWORD_FILENAME = 'password2.txt'  # ZIP을 푼 6자리 암호를 저장할 파일
 CAESAR_CIPHER_FILENAME = 'password3.txt'  # 해독할 카이사르 암호문 원본을 저장할 파일
 RESULT_FILENAME = 'result.txt'  # 최종 해독 결과를 저장할 파일
+TOOLS_DIR = os.path.join(os.path.dirname(__file__), 'tools') # 도구 설치 디렉터리
 CHARSET = string.ascii_lowercase + string.digits
 PW_LENGTH = 6
 KEYSPACE = len(CHARSET) ** PW_LENGTH
@@ -26,27 +29,78 @@ COMMON_WORDS = {
     'secret', 'key', 'code', 'unlock', 'access', 'admin'
 }
 
+def setup_tools():
+    """hashcat과 john the ripper(zip2john)를 자동으로 설치합니다."""
+    os.makedirs(TOOLS_DIR, exist_ok=True)
+    hashcat_path = os.path.join(TOOLS_DIR, 'hashcat')
+    john_path = os.path.join(TOOLS_DIR, 'john', 'run', 'john')
+
+    # 1. Hashcat 설치 확인 및 설치
+    if not os.path.exists(hashcat_path) and not os.path.exists(hashcat_path + '.exe'):
+        print("[SETUP] Hashcat not found. Attempting to download and install...")
+        try:
+            system = platform.system()
+            if system == 'Windows':
+                url = "https://hashcat.net/files/hashcat-6.2.6.7z"
+                print(f"Downloading hashcat for Windows from {url}...")
+                response = requests.get(url, stream=True)
+                with open(os.path.join(TOOLS_DIR, 'hashcat.7z'), 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                print("Download complete. Please extract hashcat.7z into the 'tools/hashcat' directory manually.")
+                print("You might need 7-Zip (https://www.7-zip.org/) to extract it.")
+                # 자동 압축 해제는 7z 라이브러리 의존성이 필요하므로 수동 안내
+            else: # Linux/macOS
+                print("Please install hashcat using your system's package manager (e.g., 'sudo apt install hashcat' or 'brew install hashcat').")
+        except Exception as e:
+            print(f"[ERROR] Failed to setup hashcat: {e}")
+
+    # 2. John the Ripper (zip2john) 설치 확인 및 설치
+    if not os.path.exists(john_path) and not os.path.exists(john_path + '.exe'):
+        print("[SETUP] zip2john (from John the Ripper) not found. Attempting to download...")
+        # John the Ripper는 소스 컴파일이 필요한 경우가 많아, 여기서는 다운로드 안내만 제공
+        print("Please download 'John the Ripper' from https://www.openwall.com/john/ and place the 'run' directory inside 'tools/john'.")
+
+    return {
+        'hashcat': hashcat_path if os.path.exists(hashcat_path) else None,
+        'zip2john': os.path.join(TOOLS_DIR, 'john', 'run', 'zip2john') if os.path.exists(john_path) else None
+    }
+
+
 def run_hashcat():
     """
     시스템에 hashcat이 설치된 경우 GPU 가속을 시도합니다.
-    -m 17210은 ZIP (PKWARE) 모드입니다.
+    zip2john으로 해시를 추출하여 공격합니다.
     """
-    try:
-        # hashcat 존재 여부 확인
-        subprocess.run(['hashcat', '--version'], capture_output=True, check=True, text=True)
-        print('[INFO] Hashcat detected. Attempting GPU-accelerated cracking...')
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        print('[INFO] Hashcat not found. Falling back to CPU brute-force.')
+    tools = setup_tools()
+    hashcat_executable = tools.get('hashcat')
+    zip2john_executable = tools.get('zip2john')
+
+    if not hashcat_executable or not zip2john_executable:
+        print('[INFO] hashcat or zip2john not available. Falling back to CPU brute-force.')
         return None
 
-    # hashcat은 zip2john으로 추출한 해시가 필요합니다.
-    # 여기서는 편의상 hashcat의 내장 ZIP 모드를 직접 시도합니다.
-    # 실제로는 zip2john을 먼저 실행하는 것이 더 안정적입니다.
+    # 1. zip2john으로 해시 추출
+    try:
+        print("[INFO] Extracting hash from ZIP file using zip2john...")
+        result = subprocess.run([zip2john_executable, ZIP_FILENAME], capture_output=True, text=True, check=True)
+        hash_line = result.stdout.strip().splitlines()[0]
+        # hashcat이 인식할 수 있도록 파일 이름 부분만 추출
+        hash_data = hash_line.split(':', 1)[1]
+        hash_file = 'zip.hash'
+        with open(hash_file, 'w') as f:
+            f.write(hash_data)
+    except Exception as e:
+        print(f"[ERROR] Failed to run zip2john: {e}")
+        return None
+
+    print('[INFO] Hash extracted. Attempting GPU-accelerated cracking with hashcat...')
+    # 2. hashcat으로 공격
     command = [
-        'hashcat',
-        '-m', '17210',  # ZIP (PKWARE)
+        hashcat_executable,
+        '-m', '17200',  # PKZIP (Compressed)
         '-a', '3',      # Brute-force (mask)
-        ZIP_FILENAME,
+        hash_file,
         '--increment',
         f'--increment-min={PW_LENGTH}',
         f'--increment-max={PW_LENGTH}',
@@ -99,48 +153,6 @@ def generate_high_probability_candidates():
                 candidates.add(padded)
 
     print(f"[INFO] 생성된 고확률 후보군: {len(candidates):,}개")
-    return list(candidates)
-
-
-def generate_hybrid_attack_candidates():
-    """
-    사전 단어와 변형 규칙을 결합한 하이브리드 공격 후보군을 생성합니다.
-    (e.g., password -> p@ssw0rd, admin -> admin123)
-    """
-    # 외부 파일 의존성 없이, 핵심 단어를 내장
-    core_words = [
-        'password', 'admin', 'secret', 'user', 'test', 'guest', 'login',
-        'master', 'qwerty', '123456', 'hello', 'world', 'key', 'code'
-    ]
-
-    candidates = set()
-
-    # 규칙 1: Leet 변환 (e.g., o -> 0, e -> 3)
-    leet_map = {'o': '0', 'e': '3', 'l': '1', 'a': '@', 's': '5'}
-    mangled_words = set(core_words)
-    for word in core_words:
-        new_word = word
-        for char, replacement in leet_map.items():
-            if char in new_word:
-                new_word = new_word.replace(char, replacement)
-        mangled_words.add(new_word)
-
-    # 규칙 2: 숫자/기호 추가
-    suffixes = ['1', '12', '123', '!', '@', '#', '1!', '123!@#']
-    for word in mangled_words:
-        # 단어 자체 추가
-        if len(word) == PW_LENGTH:
-            candidates.add(word)
-        # 접미사 추가
-        for suffix in suffixes:
-            combined = word + suffix
-            if len(combined) == PW_LENGTH:
-                candidates.add(combined)
-            # 길이가 짧으면 숫자 '0'으로 패딩
-            elif len(combined) < PW_LENGTH:
-                candidates.add((combined + '0' * PW_LENGTH)[:PW_LENGTH])
-
-    print(f"[INFO] 생성된 하이브리드 공격 후보군: {len(candidates):,}개")
     return list(candidates)
 
 
@@ -340,7 +352,7 @@ def unlock_zip():
         task_queue = mp.Queue()
 
         # --- 동적 작업 분배를 위한 작업 생성 ---
-        # 1. (양자적 접근) 각 핫스팟을 확장하여 공격 후보군 생성 및 큐에 추가
+        # 1. 구조적 패턴(핫스팟)을 최우선으로 큐에 추가
         hotspots = generate_probabilistic_hotspots()
         hotspot_candidates = set()
 
@@ -348,8 +360,8 @@ def unlock_zip():
             for mask, charset in hotspots:
                 if found_event.is_set(): break
                 candidates = expand_hotspot(mask, charset if charset else "")
-                task_queue.put(candidates)
                 hotspot_candidates.update(candidates)
+            task_queue.put(list(hotspot_candidates))
 
         hotspot_producer_thread = threading.Thread(target=populate_hotspots)
         hotspot_producer_thread.start()
