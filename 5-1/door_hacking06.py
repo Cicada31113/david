@@ -198,8 +198,8 @@ class PkzipLegacy:
 
     def update_keys(self, byte: int):
         self.keys[0] = zlib.crc32(bytes([byte]), self.keys[0])
-        self.keys[1] = (self.keys[1] + (self.keys[0] & 0xff)) * 0x8088405 + 1
-        self.keys[2] = zlib.crc32(bytes([self.keys[1] >> 24]), self.keys[2])
+        self.keys[1] = ((self.keys[1] + (self.keys[0] & 0xff)) * 0x8088405 + 1) & 0xffffffff
+        self.keys[2] = zlib.crc32(bytes([(self.keys[1] >> 24) & 0xff]), self.keys[2])
 
     def decrypt(self, ciphertext: bytes) -> bytes:
         plaintext = bytearray()
@@ -233,7 +233,7 @@ def find_zip_entry_password_worker(task_queue, found_event, found_queue, progres
                 decrypted_header = crypto.decrypt(zip_header)
                 
                 # 마지막 바이트가 타겟 CRC와 일치하는지 초고속으로 비교
-                if decrypted_header[-1] == (target_crc >> 24):
+                if decrypted_header[-1] == ((target_crc >> 24) & 0xff):
                     # CRC가 일치할 가능성이 매우 높으므로, 최종 검증
                     try:
                         with zipfile.ZipFile(ZIP_FILENAME) as zf:
@@ -241,7 +241,7 @@ def find_zip_entry_password_worker(task_queue, found_event, found_queue, progres
                             found_event.set()
                             found_queue.put((password, content))
                         return
-                    except (RuntimeError, zipfile.BadZipFile):
+                    except (RuntimeError, zipfile.BadZipFile, zlib.error):
                         continue # CRC는 맞았지만 최종 암호가 틀린 희귀 케이스
             
             progress_queue.put(len(passwords))
