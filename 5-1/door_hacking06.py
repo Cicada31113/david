@@ -144,6 +144,51 @@ def generate_hybrid_attack_candidates():
     return list(candidates)
 
 
+def generate_probabilistic_hotspots(num_hotspots=5):
+    """
+    양자 중첩 아이디어에서 착안, 가장 확률이 높은 암호 공간 '핫스팟'을 생성합니다.
+    핫스팟은 (마스크, 문자셋) 형태로 정의됩니다. 예: ('pass??', '0123...9')
+    """
+    hotspots = []
+    
+    # 핫스팟 1: 'pass' + 2자리 숫자/소문자
+    hotspots.append(('pass??', string.digits + string.ascii_lowercase))
+    
+    # 핫스팟 2: 'admin' + 1자리 숫자/소문자
+    hotspots.append(('admin?', string.digits + string.ascii_lowercase))
+
+    # 핫스팟 3: 4자리 숫자 + '00'
+    hotspots.append(('????00', string.digits))
+
+    # 핫스팟 4: 'qwerty' 또는 '123456' 같은 순차 패턴
+    hotspots.append(('123456', None)) # 고정값
+    hotspots.append(('qwerty', None)) # 고정값
+
+    # 핫스팟 5: 반복되는 문자 (e.g., aaaaaa)
+    for char in 'abcdefghijklmnopqrstuvwxyz0123456789':
+        hotspots.append((char*6, None))
+
+    print(f"[INFO] {len(hotspots)}개의 확률적 핫스팟 생성 완료.")
+    return hotspots
+
+
+def expand_hotspot(mask, charset):
+    """핫스팟 마스크를 실제 암호 후보 리스트로 확장합니다."""
+    if '?' not in mask:
+        return [mask]
+
+    q_indices = [i for i, char in enumerate(mask) if char == '?']
+    num_q = len(q_indices)
+    
+    candidates = []
+    for combo in itertools.product(charset, repeat=num_q):
+        temp_list = list(mask)
+        for i, char in zip(q_indices, combo):
+            temp_list[i] = char
+        candidates.append("".join(temp_list))
+    return candidates
+
+
 def find_zip_entry_password_worker(task_queue, found_event, found_queue, progress_queue, worker_id):
     """
     워커 프로세스: 할당된 범위의 비밀번호를 시도하여 ZIP 파일 안의 특정 파일을 읽습니다.
@@ -258,19 +303,27 @@ def unlock_zip():
         task_queue = mp.Queue()
 
         # --- 동적 작업 분배를 위한 작업 생성 ---
-        # 1. 하이브리드 공격 후보군을 최우선으로 큐에 추가
-        hybrid_candidates = generate_hybrid_attack_candidates()
-        task_queue.put(hybrid_candidates)
-        
-        # 2. 단순 고확률 후보군을 다음 순서로 큐에 추가
-        high_prob_candidates = generate_high_probability_candidates()
-        task_queue.put(high_prob_candidates)
+        # 1. (양자적 접근) 각 핫스팟을 확장하여 공격 후보군 생성 및 큐에 추가
+        # 이 작업들은 별도의 스레드에서 동시에 실행되어, 어떤 패턴이든 빠르게 공략
+        hotspots = generate_probabilistic_hotspots()
+        hotspot_candidates = set()
 
-        # 3. 전체 키스페이스에 대한 무차별 대입 작업을 배치 단위로 생성하여 큐에 추가
+        def populate_hotspots():
+            for mask, charset in hotspots:
+                if found_event.is_set(): break
+                candidates = expand_hotspot(mask, charset if charset else "")
+                task_queue.put(candidates)
+                hotspot_candidates.update(candidates)
+
+        hotspot_producer_thread = threading.Thread(target=populate_hotspots)
+        hotspot_producer_thread.start()
+
+
+        # 2. (안전장치) 전체 키스페이스에 대한 무차별 대입 작업을 배치 단위로 생성
         # 이 작업은 별도 스레드에서 수행하여 메인 로직을 막지 않음
         def populate_queue():
-            # 이미 시도한 모든 후보군(하이브리드 + 고확률)은 제외하여 중복 작업 방지
-            high_prob_set = set(high_prob_candidates) | set(hybrid_candidates)
+            # 핫스팟에서 생성된 후보는 제외하여 중복 작업 방지
+            high_prob_set = hotspot_candidates
             password_generator = (''.join(p) for p in itertools.product(CHARSET, repeat=PW_LENGTH) if ''.join(p) not in high_prob_set)
             batch_size = 200000 # 각 CPU 코어가 한 번에 가져갈 작업량
             while not found_event.is_set():
@@ -296,8 +349,8 @@ def unlock_zip():
                     total_attempts += progress_queue.get(timeout=1)
                     elapsed = time.time() - start_time
                     rate = total_attempts / elapsed if elapsed > 0 else 0
-                    # 모든 후보군을 포함하여 진행률 계산
-                    total_keyspace_with_high_prob = KEYSPACE + len(high_prob_candidates) + len(hybrid_candidates)
+                    # 진행률은 전체 키스페이스 기준으로 표시 (핫스팟은 보너스)
+                    total_keyspace_with_high_prob = KEYSPACE
                     sys.stdout.write(f'\r[CPU] Attempts: {total_attempts:,}/{total_keyspace_with_high_prob:,} ({(total_attempts/total_keyspace_with_high_prob):.2%}) | Rate: {rate:,.0f} p/s | Elapsed: {elapsed:.2f}s')
                     sys.stdout.flush()
                 except mp.queues.Empty:
@@ -310,6 +363,7 @@ def unlock_zip():
             found_result = found_queue.get()
 
         # 작업 생성 스레드 및 워커 프로세스 정리
+        hotspot_producer_thread.join()
         producer_thread.join()
 
         for p in processes:
