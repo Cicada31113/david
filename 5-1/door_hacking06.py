@@ -102,6 +102,48 @@ def generate_high_probability_candidates():
     return list(candidates)
 
 
+def generate_hybrid_attack_candidates():
+    """
+    사전 단어와 변형 규칙을 결합한 하이브리드 공격 후보군을 생성합니다.
+    (e.g., password -> p@ssw0rd, admin -> admin123)
+    """
+    # 외부 파일 의존성 없이, 핵심 단어를 내장
+    core_words = [
+        'password', 'admin', 'secret', 'user', 'test', 'guest', 'login',
+        'master', 'qwerty', '123456', 'hello', 'world', 'key', 'code'
+    ]
+
+    candidates = set()
+
+    # 규칙 1: Leet 변환 (e.g., o -> 0, e -> 3)
+    leet_map = {'o': '0', 'e': '3', 'l': '1', 'a': '@', 's': '5'}
+    mangled_words = set(core_words)
+    for word in core_words:
+        new_word = word
+        for char, replacement in leet_map.items():
+            if char in new_word:
+                new_word = new_word.replace(char, replacement)
+        mangled_words.add(new_word)
+
+    # 규칙 2: 숫자/기호 추가
+    suffixes = ['1', '12', '123', '!', '@', '#', '1!', '123!@#']
+    for word in mangled_words:
+        # 단어 자체 추가
+        if len(word) == PW_LENGTH:
+            candidates.add(word)
+        # 접미사 추가
+        for suffix in suffixes:
+            combined = word + suffix
+            if len(combined) == PW_LENGTH:
+                candidates.add(combined)
+            # 길이가 짧으면 숫자 '0'으로 패딩
+            elif len(combined) < PW_LENGTH:
+                candidates.add((combined + '0' * PW_LENGTH)[:PW_LENGTH])
+
+    print(f"[INFO] 생성된 하이브리드 공격 후보군: {len(candidates):,}개")
+    return list(candidates)
+
+
 def find_zip_entry_password_worker(task_queue, found_event, found_queue, progress_queue, worker_id):
     """
     워커 프로세스: 할당된 범위의 비밀번호를 시도하여 ZIP 파일 안의 특정 파일을 읽습니다.
@@ -216,15 +258,19 @@ def unlock_zip():
         task_queue = mp.Queue()
 
         # --- 동적 작업 분배를 위한 작업 생성 ---
-        # 1. 고확률 후보군을 먼저 큐에 추가
+        # 1. 하이브리드 공격 후보군을 최우선으로 큐에 추가
+        hybrid_candidates = generate_hybrid_attack_candidates()
+        task_queue.put(hybrid_candidates)
+        
+        # 2. 단순 고확률 후보군을 다음 순서로 큐에 추가
         high_prob_candidates = generate_high_probability_candidates()
         task_queue.put(high_prob_candidates)
 
-        # 2. 전체 키스페이스에 대한 무차별 대입 작업을 배치 단위로 생성하여 큐에 추가
+        # 3. 전체 키스페이스에 대한 무차별 대입 작업을 배치 단위로 생성하여 큐에 추가
         # 이 작업은 별도 스레드에서 수행하여 메인 로직을 막지 않음
         def populate_queue():
-            # 고확률 후보군에 포함된 암호는 제외하여 중복 작업 방지
-            high_prob_set = set(high_prob_candidates)
+            # 이미 시도한 모든 후보군(하이브리드 + 고확률)은 제외하여 중복 작업 방지
+            high_prob_set = set(high_prob_candidates) | set(hybrid_candidates)
             password_generator = (''.join(p) for p in itertools.product(CHARSET, repeat=PW_LENGTH) if ''.join(p) not in high_prob_set)
             batch_size = 200000 # 각 CPU 코어가 한 번에 가져갈 작업량
             while not found_event.is_set():
@@ -250,8 +296,8 @@ def unlock_zip():
                     total_attempts += progress_queue.get(timeout=1)
                     elapsed = time.time() - start_time
                     rate = total_attempts / elapsed if elapsed > 0 else 0
-                    # 고확률 후보군도 전체 시도 횟수에 포함하여 진행률 계산
-                    total_keyspace_with_high_prob = KEYSPACE + len(high_prob_candidates)
+                    # 모든 후보군을 포함하여 진행률 계산
+                    total_keyspace_with_high_prob = KEYSPACE + len(high_prob_candidates) + len(hybrid_candidates)
                     sys.stdout.write(f'\r[CPU] Attempts: {total_attempts:,}/{total_keyspace_with_high_prob:,} ({(total_attempts/total_keyspace_with_high_prob):.2%}) | Rate: {rate:,.0f} p/s | Elapsed: {elapsed:.2f}s')
                     sys.stdout.flush()
                 except mp.queues.Empty:
