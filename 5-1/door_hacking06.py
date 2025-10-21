@@ -1,10 +1,10 @@
 import itertools
 import string
 import time
-import zipfile
 import multiprocessing as mp
 import threading
-from collections import Counter, defaultdict
+import zipfile
+import zlib
 import os
 import subprocess
 import sys
@@ -189,71 +189,88 @@ def expand_hotspot(mask, charset):
     return candidates
 
 
-def find_zip_entry_password_worker(task_queue, found_event, found_queue, progress_queue, worker_id):
-    """
-    워커 프로세스: 할당된 범위의 비밀번호를 시도하여 ZIP 파일 안의 특정 파일을 읽습니다.
-    동적 작업 분배를 위해 중앙 작업 큐에서 작업(비밀번호 배치)을 가져옵니다.
-    """
-    def attempt_password(password: str, zf: zipfile.ZipFile) -> bool:
-        """비밀번호 시도 및 성공 시 이벤트 설정"""
-        try:
-            content = zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
-            if not found_event.is_set():
-                found_event.set()
-                found_queue.put((password, content))
-            return True
-        except (RuntimeError, zipfile.BadZipFile, zipfile.zlib.error, IsADirectoryError):
-            return False
-        except Exception: # 예상치 못한 오류 방지
-            return False
+class PkzipLegacy:
+    """PKZIP 전통적 암호화(ZipCrypto) 관련 계산 클래스"""
+    def __init__(self, password: bytes):
+        self.keys = [0x12345678, 0x23456789, 0x34567890]
+        for byte in password:
+            self.update_keys(byte)
 
-    # 각 워커는 독립적인 ZipFile 객체를 사용해야 충돌이 없음
+    def update_keys(self, byte: int):
+        self.keys[0] = zlib.crc32(bytes([byte]), self.keys[0])
+        self.keys[1] = (self.keys[1] + (self.keys[0] & 0xff)) * 0x8088405 + 1
+        self.keys[2] = zlib.crc32(bytes([self.keys[1] >> 24]), self.keys[2])
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        plaintext = bytearray()
+        for byte in ciphertext:
+            k = self.keys[2] | 2
+            temp = byte ^ (((k * (k ^ 1)) >> 8) & 0xff)
+            plaintext.append(temp)
+            self.update_keys(temp)
+        return bytes(plaintext)
+
+
+def find_zip_entry_password_worker(task_queue, found_event, found_queue, progress_queue, worker_id, zip_header, target_crc):
+    """
+    워커 프로세스: 초고속 CRC32 비교를 통해 암호 후보를 찾습니다.
+    """
     try:
-        with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
-            while not found_event.is_set():
-                try:
-                    # 중앙 큐에서 작업(비밀번호 리스트)을 가져옴
-                    passwords = task_queue.get(timeout=0.1)
-                except mp.queues.Empty:
-                    # 큐가 비었으면 워커의 역할은 끝
-                    break
+        while not found_event.is_set():
+            try:
+                passwords = task_queue.get(timeout=0.1)
+            except mp.queues.Empty:
+                break
 
-                for password in passwords:
-                    if found_event.is_set():
-                        return # 다른 워커가 찾았으면 즉시 종료
-                    if attempt_password(password, zf):
-                        progress_queue.put(len(passwords)) # 마지막 성공분 보고
-                        return # 내가 찾았으면 종료
+            for password in passwords:
+                if found_event.is_set():
+                    return
+
+                # PkzipLegacy 클래스를 사용하여 암호화 키 초기화
+                crypto = PkzipLegacy(password.encode('utf-8'))
                 
-                # 현재 배치 작업 완료 후 진행 상황 보고
-                progress_queue.put(len(passwords))
+                # 12바이트 헤더를 복호화 시도
+                decrypted_header = crypto.decrypt(zip_header)
+                
+                # 마지막 바이트가 타겟 CRC와 일치하는지 초고속으로 비교
+                if decrypted_header[-1] == (target_crc >> 24):
+                    # CRC가 일치할 가능성이 매우 높으므로, 최종 검증
+                    try:
+                        with zipfile.ZipFile(ZIP_FILENAME) as zf:
+                            content = zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
+                            found_event.set()
+                            found_queue.put((password, content))
+                        return
+                    except (RuntimeError, zipfile.BadZipFile):
+                        continue # CRC는 맞았지만 최종 암호가 틀린 희귀 케이스
+            
+            progress_queue.put(len(passwords))
 
-    except FileNotFoundError:
-        print(f"[ERROR] Worker {worker_id}: ZIP file '{ZIP_FILENAME}' not found.")
     except Exception as e:
         print(f"[ERROR] Worker {worker_id} encountered an unexpected error: {e}")
 
 
-def run_benchmark(duration_sec=3):
+def run_benchmark(duration_sec=2):
     """
     짧은 시간 동안 벤치마크를 실행하여 현재 시스템의 단일 코어 성능을 측정합니다.
+    CRC32 비교 방식의 속도를 측정합니다.
     """
     print(f"[INFO] Running a {duration_sec}-second benchmark to estimate performance...")
     attempts = 0
     start_time = time.time()
     password_generator = itertools.product(CHARSET, repeat=PW_LENGTH)
     
-    try:
-        with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
-            while time.time() - start_time < duration_sec:
-                password = ''.join(next(password_generator))
-                try:
-                    zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
-                except (RuntimeError, zipfile.BadZipFile, zipfile.zlib.error):
-                    attempts += 1
-    except Exception as e:
-        print(f"[WARN] Benchmark failed: {e}. Cannot estimate time.")
-        return 0
+    # CRC32 비교를 위한 더미 데이터
+    dummy_header = b'\x00' * 12
+    dummy_crc_byte = 0
+
+    while time.time() - start_time < duration_sec:
+        password = ''.join(next(password_generator))
+        crypto = PkzipLegacy(password.encode('utf-8'))
+        decrypted_header = crypto.decrypt(dummy_header)
+        if decrypted_header[-1] == dummy_crc_byte:
+            pass # 실제로는 거의 발생하지 않음
+        attempts += 1
     
     rate = attempts / duration_sec
     return rate
@@ -261,7 +278,7 @@ def run_benchmark(duration_sec=3):
 
 def unlock_zip():
     """
-    (문제 1) ZIP 파일 암호를 찾아 해제합니다. GPU(hashcat)를 우선 시도하고, 실패 시 CPU 병렬 처리를 수행합니다.
+    (문제 1) ZIP 파일 암호를 찾아 해제합니다. GPU(hashcat)를 우선 시도하고, 실패 시 CRC32 사전 계산 공격을 수행합니다.
     """
     if not os.path.exists(ZIP_FILENAME):
         print(f'[ERROR] {ZIP_FILENAME} not found. Please place it in the same directory.')
@@ -283,19 +300,39 @@ def unlock_zip():
     else:
         found_result = None
 
-    # 2. GPU 실패/미설치 시 CPU 병렬 처리
+    # 2. GPU 실패/미설치 시 CPU 병렬 처리 (CRC32 사전 계산 공격)
     if not found_result:
-        # 2-1. 벤치마크 실행 및 예상 시간 계산
+        # 2-1. ZIP 파일 헤더에서 CRC32와 암호화된 헤더 12바이트 추출
+        try:
+            with open(ZIP_FILENAME, 'rb') as f:
+                zf = zipfile.ZipFile(f)
+                target_info = zf.getinfo(TARGET_FILE_IN_ZIP)
+                if not target_info.flag_bits & 0x1:
+                    print("[ERROR] Target file is not encrypted.")
+                    return False
+                
+                target_crc = target_info.CRC
+                f.seek(target_info.header_offset)
+                # Local File Header (30 bytes) + filename length
+                header_plus_filename_size = 30 + len(target_info.filename)
+                f.seek(header_plus_filename_size, 1)
+                zip_header = f.read(12) # 암호화된 데이터의 첫 12바이트
+                print(f"[INFO] Target CRC32: {target_crc}, Header snippet extracted.")
+        except Exception as e:
+            print(f"[FATAL] Failed to analyze ZIP file structure: {e}")
+            return False
+
+        # 2-2. 벤치마크 실행 및 예상 시간 계산
         single_core_rate = run_benchmark()
         num_workers = max(1, os.cpu_count())
         if single_core_rate > 0:
-            estimated_rate = single_core_rate * num_workers * 0.8 # 병렬 처리 오버헤드 감안
+            estimated_rate = single_core_rate * num_workers * 0.9 # 병렬 처리 오버헤드 감안
             estimated_seconds = KEYSPACE / estimated_rate
-            estimated_time_str = time.strftime('%H hours, %M minutes, %S seconds', time.gmtime(estimated_seconds))
-            print(f"[INFO] System benchmark: ~{single_core_rate:,.0f} p/s per core.")
+            estimated_time_str = time.strftime('%M minutes, %S seconds', time.gmtime(estimated_seconds))
+            print(f"[INFO] System benchmark: ~{single_core_rate:,.0f} p/s per core (CRC32 method).")
             print(f"[INFO] With {num_workers} cores, estimated total time for full scan: {estimated_time_str}")
         
-        print('[INFO] Starting dynamically balanced CPU parallel attack...')
+        print('[INFO] Starting CRC32 Pre-computation Attack...')
 
         found_event = mp.Event()
         found_queue = mp.Queue()
@@ -304,7 +341,6 @@ def unlock_zip():
 
         # --- 동적 작업 분배를 위한 작업 생성 ---
         # 1. (양자적 접근) 각 핫스팟을 확장하여 공격 후보군 생성 및 큐에 추가
-        # 이 작업들은 별도의 스레드에서 동시에 실행되어, 어떤 패턴이든 빠르게 공략
         hotspots = generate_probabilistic_hotspots()
         hotspot_candidates = set()
 
@@ -320,12 +356,10 @@ def unlock_zip():
 
 
         # 2. (안전장치) 전체 키스페이스에 대한 무차별 대입 작업을 배치 단위로 생성
-        # 이 작업은 별도 스레드에서 수행하여 메인 로직을 막지 않음
         def populate_queue():
-            # 핫스팟에서 생성된 후보는 제외하여 중복 작업 방지
             high_prob_set = hotspot_candidates
             password_generator = (''.join(p) for p in itertools.product(CHARSET, repeat=PW_LENGTH) if ''.join(p) not in high_prob_set)
-            batch_size = 200000 # 각 CPU 코어가 한 번에 가져갈 작업량
+            batch_size = 500000 # 배치 크기를 늘려 오버헤드 감소
             while not found_event.is_set():
                 batch = list(itertools.islice(password_generator, batch_size))
                 if not batch:
@@ -337,7 +371,7 @@ def unlock_zip():
 
         processes = []
         for i in range(num_workers):
-            p = mp.Process(target=find_zip_entry_password_worker, args=(task_queue, found_event, found_queue, progress_queue, i))
+            p = mp.Process(target=find_zip_entry_password_worker, args=(task_queue, found_event, found_queue, progress_queue, i, zip_header, target_crc))
             processes.append(p)
             p.start()
             print(f"[INFO] Worker {i} started...")
