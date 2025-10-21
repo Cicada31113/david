@@ -3,6 +3,8 @@ import string
 import time
 import zipfile
 import multiprocessing as mp
+import threading
+from collections import Counter, defaultdict
 import os
 import subprocess
 import sys
@@ -23,7 +25,6 @@ COMMON_WORDS = {
     'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'password',
     'secret', 'key', 'code', 'unlock', 'access', 'admin'
 }
-HIGH_PROB_CANDIDATES_COUNT = 500000 # 고확률 후보군 개수 (조정 가능)
 
 def run_hashcat():
     """
@@ -101,13 +102,11 @@ def generate_high_probability_candidates():
     return list(candidates)
 
 
-def find_zip_entry_password_worker(task, found_event, found_queue, progress_queue, worker_id):
+def find_zip_entry_password_worker(task_queue, found_event, found_queue, progress_queue, worker_id):
     """
     워커 프로세스: 할당된 범위의 비밀번호를 시도하여 ZIP 파일 안의 특정 파일을 읽습니다.
-    'task'는 ('high_prob', candidates_list) 또는 ('brute_force', start_idx, end_idx) 형태입니다.
+    동적 작업 분배를 위해 중앙 작업 큐에서 작업(비밀번호 배치)을 가져옵니다.
     """
-    mode, *args = task
-
     def attempt_password(password: str, zf: zipfile.ZipFile) -> bool:
         """비밀번호 시도 및 성공 시 이벤트 설정"""
         try:
@@ -116,7 +115,7 @@ def find_zip_entry_password_worker(task, found_event, found_queue, progress_queu
                 found_event.set()
                 found_queue.put((password, content))
             return True
-        except (RuntimeError, zipfile.BadZipFile, zipfile.zlib.error):
+        except (RuntimeError, zipfile.BadZipFile, zipfile.zlib.error, IsADirectoryError):
             return False
         except Exception: # 예상치 못한 오류 방지
             return False
@@ -124,35 +123,53 @@ def find_zip_entry_password_worker(task, found_event, found_queue, progress_queu
     # 각 워커는 독립적인 ZipFile 객체를 사용해야 충돌이 없음
     try:
         with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
-            local_attempts = 0
-            if mode == 'high_prob':
-                candidates = args[0]
-                for password in candidates:
-                    if found_event.is_set(): return
-                    if attempt_password(password, zf): return
-                    local_attempts += 1
-                    if local_attempts % 50000 == 0:
-                        progress_queue.put(50000)
-            elif mode == 'brute_force':
-                start_idx, end_idx = args
-                password_generator = itertools.islice(itertools.product(CHARSET, repeat=PW_LENGTH), start_idx, end_idx)
-                batch_report_size = 50000
-                for password_tuple in password_generator:
-                    if found_event.is_set(): return
-                    password = ''.join(password_tuple)
-                    if attempt_password(password, zf): return
-                    local_attempts += 1
-                    if local_attempts % batch_report_size == 0:
-                        progress_queue.put(batch_report_size)
-                        local_attempts = 0 # 카운터 리셋
-            
-            # 루프 종료 후 남은 시도 횟수 보고
-            if local_attempts > 0:
-                progress_queue.put(local_attempts)
+            while not found_event.is_set():
+                try:
+                    # 중앙 큐에서 작업(비밀번호 리스트)을 가져옴
+                    passwords = task_queue.get(timeout=0.1)
+                except mp.queues.Empty:
+                    # 큐가 비었으면 워커의 역할은 끝
+                    break
+
+                for password in passwords:
+                    if found_event.is_set():
+                        return # 다른 워커가 찾았으면 즉시 종료
+                    if attempt_password(password, zf):
+                        progress_queue.put(len(passwords)) # 마지막 성공분 보고
+                        return # 내가 찾았으면 종료
+                
+                # 현재 배치 작업 완료 후 진행 상황 보고
+                progress_queue.put(len(passwords))
+
     except FileNotFoundError:
         print(f"[ERROR] Worker {worker_id}: ZIP file '{ZIP_FILENAME}' not found.")
     except Exception as e:
         print(f"[ERROR] Worker {worker_id} encountered an unexpected error: {e}")
+
+
+def run_benchmark(duration_sec=3):
+    """
+    짧은 시간 동안 벤치마크를 실행하여 현재 시스템의 단일 코어 성능을 측정합니다.
+    """
+    print(f"[INFO] Running a {duration_sec}-second benchmark to estimate performance...")
+    attempts = 0
+    start_time = time.time()
+    password_generator = itertools.product(CHARSET, repeat=PW_LENGTH)
+    
+    try:
+        with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
+            while time.time() - start_time < duration_sec:
+                password = ''.join(next(password_generator))
+                try:
+                    zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
+                except (RuntimeError, zipfile.BadZipFile, zipfile.zlib.error):
+                    attempts += 1
+    except Exception as e:
+        print(f"[WARN] Benchmark failed: {e}. Cannot estimate time.")
+        return 0
+    
+    rate = attempts / duration_sec
+    return rate
 
 
 def unlock_zip():
@@ -181,40 +198,50 @@ def unlock_zip():
 
     # 2. GPU 실패/미설치 시 CPU 병렬 처리
     if not found_result:
-        print('[INFO] Starting entropy-based CPU parallel attack...')
+        # 2-1. 벤치마크 실행 및 예상 시간 계산
+        single_core_rate = run_benchmark()
         num_workers = max(1, os.cpu_count())
+        if single_core_rate > 0:
+            estimated_rate = single_core_rate * num_workers * 0.8 # 병렬 처리 오버헤드 감안
+            estimated_seconds = KEYSPACE / estimated_rate
+            estimated_time_str = time.strftime('%H hours, %M minutes, %S seconds', time.gmtime(estimated_seconds))
+            print(f"[INFO] System benchmark: ~{single_core_rate:,.0f} p/s per core.")
+            print(f"[INFO] With {num_workers} cores, estimated total time for full scan: {estimated_time_str}")
+        
+        print('[INFO] Starting dynamically balanced CPU parallel attack...')
 
         found_event = mp.Event()
         found_queue = mp.Queue()
         progress_queue = mp.Queue()
+        task_queue = mp.Queue()
 
-        # --- 지능적인 작업 분배 (개선된 방식) ---
-        tasks = []
-        # 1. 특공조(Worker 0)를 위한 고확률 후보군 생성 및 할당
+        # --- 동적 작업 분배를 위한 작업 생성 ---
+        # 1. 고확률 후보군을 먼저 큐에 추가
         high_prob_candidates = generate_high_probability_candidates()
-        tasks.append(('high_prob', high_prob_candidates))
-        
-        # 2. 나머지 일반 병력을 위한 전체 키스페이스 분할
-        # 고확률 후보군이 차지하는 부분을 제외하지 않고, 전체 공간을 병렬 탐색
-        # 어차피 특공조가 먼저 찾으면 모든 프로세스가 종료되므로 효율 저하가 거의 없음
-        workers_for_brute_force = num_workers - 1
-        if workers_for_brute_force > 0:
-            chunk_size = KEYSPACE // workers_for_brute_force
-            for i in range(workers_for_brute_force):
-                start_idx = i * chunk_size
-                end_idx = KEYSPACE if i == workers_for_brute_force - 1 else (i + 1) * chunk_size
-                tasks.append(('brute_force', start_idx, end_idx))
-        
-        # 만약 워커가 1개라면, 고확률 시도 후 전체 무차별 대입 수행
-        if num_workers == 1:
-            tasks.append(('brute_force', 0, KEYSPACE))
+        task_queue.put(high_prob_candidates)
+
+        # 2. 전체 키스페이스에 대한 무차별 대입 작업을 배치 단위로 생성하여 큐에 추가
+        # 이 작업은 별도 스레드에서 수행하여 메인 로직을 막지 않음
+        def populate_queue():
+            # 고확률 후보군에 포함된 암호는 제외하여 중복 작업 방지
+            high_prob_set = set(high_prob_candidates)
+            password_generator = (''.join(p) for p in itertools.product(CHARSET, repeat=PW_LENGTH) if ''.join(p) not in high_prob_set)
+            batch_size = 200000 # 각 CPU 코어가 한 번에 가져갈 작업량
+            while not found_event.is_set():
+                batch = list(itertools.islice(password_generator, batch_size))
+                if not batch:
+                    break # 모든 암호 생성 완료
+                task_queue.put(batch)
+
+        producer_thread = threading.Thread(target=populate_queue)
+        producer_thread.start()
 
         processes = []
-        for i, task in enumerate(tasks):
-            p = mp.Process(target=find_zip_entry_password_worker, args=(task, found_event, found_queue, progress_queue, i))
+        for i in range(num_workers):
+            p = mp.Process(target=find_zip_entry_password_worker, args=(task_queue, found_event, found_queue, progress_queue, i))
             processes.append(p)
             p.start()
-            print(f"[INFO] Worker {i} (mode: {task[0]}) started...")
+            print(f"[INFO] Worker {i} started...")
 
         total_attempts = 0
         try:
@@ -223,10 +250,9 @@ def unlock_zip():
                     total_attempts += progress_queue.get(timeout=1)
                     elapsed = time.time() - start_time
                     rate = total_attempts / elapsed if elapsed > 0 else 0
-                    # 고확률 후보군 개수를 전체 진행률 계산에 포함
-                    effective_keyspace = KEYSPACE + len(high_prob_candidates)
-                    progress_percent = total_attempts / effective_keyspace
-                    sys.stdout.write(f'\r[CPU] Attempts: {total_attempts:,} ({progress_percent:.2%}) | Rate: {rate:,.0f} p/s | Elapsed: {elapsed:.2f}s')
+                    # 고확률 후보군도 전체 시도 횟수에 포함하여 진행률 계산
+                    total_keyspace_with_high_prob = KEYSPACE + len(high_prob_candidates)
+                    sys.stdout.write(f'\r[CPU] Attempts: {total_attempts:,}/{total_keyspace_with_high_prob:,} ({(total_attempts/total_keyspace_with_high_prob):.2%}) | Rate: {rate:,.0f} p/s | Elapsed: {elapsed:.2f}s')
                     sys.stdout.flush()
                 except mp.queues.Empty:
                     continue
@@ -236,6 +262,9 @@ def unlock_zip():
 
         if found_event.is_set() and not found_queue.empty():
             found_result = found_queue.get()
+
+        # 작업 생성 스레드 및 워커 프로세스 정리
+        producer_thread.join()
 
         for p in processes:
             p.terminate()
