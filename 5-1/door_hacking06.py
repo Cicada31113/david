@@ -107,47 +107,43 @@ def find_zip_entry_password_worker(task, found_event, found_queue, progress_queu
     'task'는 ('high_prob', candidates_list) 또는 ('brute_force', start_idx, end_idx) 형태입니다.
     """
     mode, *args = task
-    local_attempts = 0
 
-    def check_password(password, zf_handle):
+    def attempt_password(password: str, zf: zipfile.ZipFile) -> bool:
+        """비밀번호 시도 및 성공 시 이벤트 설정"""
         try:
-            content = zf_handle.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
+            content = zf.read(TARGET_FILE_IN_ZIP, pwd=password.encode('utf-8'))
             if not found_event.is_set():
                 found_event.set()
                 found_queue.put((password, content))
             return True
         except (RuntimeError, zipfile.BadZipFile):
             return False
+        except Exception: # 예상치 못한 오류 방지
+            return False
 
-    with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
-        if mode == 'high_prob':
-            # 특공조: 고확률 후보군 전체를 담당
-            candidates = args[0]
-            for password in candidates:
-                if found_event.is_set(): return
-                if check_password(password, zf): return
-                local_attempts += 1
-                if local_attempts % 50000 == 0:
-                    progress_queue.put(50000)
-        
-        elif mode == 'brute_force':
-            # 일반 병력: 할당된 숫자 범위를 암호로 변환하여 시도
-            start_idx, end_idx = args
-            password_generator = itertools.islice(itertools.product(CHARSET, repeat=PW_LENGTH), start_idx, end_idx)
-
-            for password_tuple in password_generator:
-                if found_event.is_set(): break
-                
-                password = ''.join(password_tuple)
-                if check_password(password, zf): break
-
-                local_attempts += 1
-                if local_attempts % 50000 == 0:
-                    progress_queue.put(50000)
-                    local_attempts = 0 # 카운터 리셋
-    
-    if local_attempts > 0:
-        progress_queue.put(local_attempts)
+    # 각 워커는 독립적인 ZipFile 객체를 사용해야 충돌이 없음
+    try:
+        with zipfile.ZipFile(ZIP_FILENAME, 'r') as zf:
+            local_attempts = 0
+            if mode == 'high_prob':
+                candidates = args[0]
+                for password in candidates:
+                    if found_event.is_set(): return
+                    if attempt_password(password, zf): return
+                    local_attempts += 1
+            elif mode == 'brute_force':
+                start_idx, end_idx = args
+                password_generator = itertools.islice(itertools.product(CHARSET, repeat=PW_LENGTH), start_idx, end_idx)
+                for password_tuple in password_generator:
+                    if found_event.is_set(): return
+                    password = ''.join(password_tuple)
+                    if attempt_password(password, zf): return
+                    local_attempts += 1
+            progress_queue.put(local_attempts)
+    except FileNotFoundError:
+        print(f"[ERROR] Worker {worker_id}: ZIP file '{ZIP_FILENAME}' not found.")
+    except Exception as e:
+        print(f"[ERROR] Worker {worker_id} encountered an unexpected error: {e}")
 
 
 def unlock_zip():
@@ -272,7 +268,7 @@ def caesar_cipher_decode(target_text):
     print('=' * 50)
 
     decrypted_results = []
-    plausible_shifts = []
+    best_match = {'score': -1, 'shift': -1, 'text': ''}
     # 알파벳 수(26)만큼 반복하여 모든 shift 경우의 수를 테스트합니다.
     for shift in range(26):
         result = ''
@@ -289,42 +285,38 @@ def caesar_cipher_decode(target_text):
         decrypted_results.append(result)
         # 보너스: 해독된 문장에 일반적인 영어 단어가 포함되어 있는지 확인
         # 문장을 소문자로 바꾸고 단어로 분리하여 사전에 있는지 검사합니다.
-        found_words = {word for word in COMMON_WORDS if word in result.lower().split()}
+        words_in_result = result.lower().split()
+        found_words = {word for word in COMMON_WORDS if word in words_in_result}
+        score = len(found_words)
         
         # 자리수(shift+1)에 따라 해독된 결과를 출력합니다.
-        if found_words:
-            plausible_shifts.append((shift + 1, result, found_words))
+        if score > 0:
             print(f'Shift #{shift + 1:02d}: {result}  <-- Plausible, contains: {", ".join(found_words)}')
+            if score > best_match['score']:
+                best_match = {'score': score, 'shift': shift + 1, 'text': result}
         else:
             print(f'Shift #{shift + 1:02d}: {result}')
 
-    if plausible_shifts:
-        print('\n[INFO] Automatically detected plausible results. You may choose from these.')
+    # 가장 가능성 높은 결과를 자동으로 선택하여 저장
+    if best_match['score'] > 0:
+        print('\n' + '-' * 50)
+        print(f"[AUTO-SELECT] Best match found at Shift #{best_match['shift']} with {best_match['score']} common words.")
+        final_text = best_match['text']
+    else:
+        # 그럴듯한 결과를 찾지 못하면 첫 번째 결과(shift 1)를 기본값으로 사용
+        print('\n[INFO] No plausible result found based on the dictionary. Defaulting to Shift #1.')
+        final_text = decrypted_results[0]
 
-    # 사용자가 눈으로 식별하고 번호를 입력하면 결과를 저장합니다.
-    while True:
-        try:
-            user_input = input(f'\nEnter the correct shift number to save the result (1-26): ')
-            correct_shift = int(user_input)
+    try:
+        # 최종 암호를 result.txt로 저장합니다.
+        with open(RESULT_FILENAME, 'w', encoding='utf-8') as f:
+            f.write(final_text)
+        print(f"\n[SUCCESS] Decoded text saved to '{RESULT_FILENAME}'")
+        print(f'  Final result: {final_text}')
+    except IOError as e:
+        print(f'[ERROR] Error writing result to file: {e}')
 
-            if 1 <= correct_shift <= 26:
-                # 사용자가 입력한 번호는 1-26, 리스트 인덱스는 0-25 이므로 -1을 해줍니다.
-                final_text = decrypted_results[correct_shift - 1]
 
-                try:
-                    # 최종 암호를 result.txt로 저장합니다.
-                    with open(RESULT_FILENAME, 'w', encoding='utf-8') as f:
-                        f.write(final_text)
-                    print(f"\n[SUCCESS] Decoded text saved to '{RESULT_FILENAME}'")
-                    print(f'  Final result: {final_text}')
-                    break
-                except IOError as e:
-                    print(f'[ERROR] Error writing result to file: {e}')
-                    break
-            else:
-                print('[ERROR] Invalid number. Please enter a number between 1 and 26.')
-        except ValueError:
-            print('[ERROR] Invalid input. Please enter a number.')
 
 
 def main():
